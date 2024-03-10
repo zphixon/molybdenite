@@ -6,3 +6,18 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+base64 = "0.22.0"
+getrandom = "0.2.12"
+sha1_smol = "1.0.0"
+thiserror = "1.0.57"
+tokio = { version = "1.36.0", features = ["mio", "net", "io-util"] }
+url = "2.5.0"
+
+[dev-dependencies]
+tokio = { version = "1.36.0", features = ["full"] }
+tokio-rustls = "0.25.0"
+webpki-roots = "0.26.1"
+rustls-pemfile = "2.1.1"
+anyhow = "1.0.80"
+argh = "0.1.12"
+tungstenite = "0.21.0"
