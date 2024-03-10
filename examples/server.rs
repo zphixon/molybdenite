@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use std::{fs::File, io::BufReader, net::ToSocketAddrs, path::PathBuf, sync::Arc};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt, BufWriter},
+    io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
 };
 use tokio_rustls::{rustls::ServerConfig, TlsAcceptor};
@@ -111,9 +111,4 @@ async fn main() -> Result<()> {
             anyhow::bail!("if using tls, both --cert and --key must be passed");
         }
     }
-
-    // client sent: "GET / HTTP/1.1\r\nHost: 192.168.1.196:4443\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: W2q7Jx5ftkRlhKiLDXc9pQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
-    // client sent: "GET / HTTP/1.1\r\nHost: 192.168.1.196:4443\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: pKP0kjhcNW6WuZXcVu4p+w==\r\n\r\n"
-
-    Ok(())
 }

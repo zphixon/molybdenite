@@ -23,12 +23,25 @@ struct Args {
     ca: Option<PathBuf>,
 }
 
-async fn do_connect(url: Url, stream: impl AsyncReadExt + AsyncWriteExt + Unpin) {
-    let mut ws = molybdenite::WebSocket::client_from_stream(url, stream)
-        .await
-        .unwrap();
+async fn do_connect(url: Url, stream: impl AsyncReadExt + AsyncWriteExt + Unpin) -> Result<()> {
+    let mut ws = molybdenite::WebSocket::client_from_stream(url, stream).await?;
 
-    ws.read().await.unwrap();
+    loop {
+        match ws.read().await {
+            Ok(message) => {
+                println!("server sent: {:?}", message);
+            }
+
+            Err(err) if err.closed_normally() => {
+                println!("closed normally");
+                break;
+            }
+
+            Err(err) => anyhow::bail!(err),
+        }
+    }
+
+    Ok(())
 }
 
 #[tokio::main]
@@ -82,13 +95,13 @@ async fn main() -> Result<()> {
             .await
             .context("tls")?;
 
-        do_connect(args.request, tls_stream).await;
+        do_connect(args.request, tls_stream).await?;
     } else {
         do_connect(
             args.request,
             TcpStream::connect(addr).await.context("connect")?,
         )
-        .await;
+        .await?;
     }
 
     Ok(())

@@ -1,7 +1,8 @@
 use std::net::TcpListener;
 use std::thread::spawn;
-use tungstenite::accept;
+use tungstenite::protocol::frame::coding::{Control, Data, OpCode};
 use tungstenite::protocol::frame::{Frame, FrameHeader};
+use tungstenite::{accept, Message};
 
 /// A WebSocket echo server
 fn main() {
@@ -11,43 +12,138 @@ fn main() {
             println!("got client");
             let mut websocket = accept(stream.unwrap()).unwrap();
             println!("accepted handshake");
-            loop {
-                websocket
-                    .write(tungstenite::Message::Frame(Frame::from_payload(
-                        FrameHeader {
-                            is_final: false,
-                            opcode: tungstenite::protocol::frame::coding::OpCode::Data(
-                                tungstenite::protocol::frame::coding::Data::Text,
-                            ),
-                            mask: None,
-                            ..Default::default()
-                        },
-                        String::from("hello").into_bytes(),
-                    )))
-                    .unwrap();
-                websocket
-                    .write(tungstenite::Message::Frame(Frame::from_payload(
-                        FrameHeader {
-                            is_final: true,
-                            opcode: tungstenite::protocol::frame::coding::OpCode::Data(
-                                tungstenite::protocol::frame::coding::Data::Continue,
-                            ),
-                            mask: None,
-                            ..Default::default()
-                        },
-                        String::from("world").into_bytes(),
-                    )))
-                    .unwrap();
-                websocket.flush().unwrap();
-                println!("sent hello");
+            websocket
+                .write(Message::Frame(Frame::from_payload(
+                    FrameHeader {
+                        is_final: false,
+                        opcode: OpCode::Data(Data::Text),
+                        ..Default::default()
+                    },
+                    String::from("dumpty").into_bytes(),
+                )))
+                .unwrap();
 
-                let msg = websocket.read().unwrap();
+            websocket
+                .write(Message::Frame(Frame::from_payload(
+                    FrameHeader {
+                        is_final: true,
+                        opcode: OpCode::Control(Control::Ping),
+                        ..Default::default()
+                    },
+                    Vec::with_capacity(0),
+                )))
+                .unwrap();
+            websocket
+                .write(Message::Frame(Frame::from_payload(
+                    FrameHeader {
+                        is_final: true,
+                        opcode: OpCode::Control(Control::Ping),
+                        ..Default::default()
+                    },
+                    Vec::with_capacity(0),
+                )))
+                .unwrap();
 
-                // We do not want to send back ping/pong messages.
-                if msg.is_binary() || msg.is_text() {
-                    websocket.send(msg).unwrap();
-                }
-            }
+            websocket
+                .write(Message::Frame(Frame::from_payload(
+                    FrameHeader {
+                        is_final: true,
+                        opcode: OpCode::Control(Control::Ping),
+                        ..Default::default()
+                    },
+                    Vec::with_capacity(0),
+                )))
+                .unwrap();
+
+            websocket
+                .write(Message::Frame(Frame::from_payload(
+                    FrameHeader {
+                        is_final: true,
+                        opcode: OpCode::Control(Control::Ping),
+                        ..Default::default()
+                    },
+                    Vec::with_capacity(0),
+                )))
+                .unwrap();
+
+            websocket
+                .write(Message::Frame(Frame::from_payload(
+                    FrameHeader {
+                        is_final: true,
+                        opcode: OpCode::Control(Control::Ping),
+                        ..Default::default()
+                    },
+                    Vec::with_capacity(0),
+                )))
+                .unwrap();
+
+            websocket
+                .write(Message::Frame(Frame::from_payload(
+                    FrameHeader {
+                        is_final: false,
+                        opcode: OpCode::Data(Data::Continue),
+                        ..Default::default()
+                    },
+                    String::from("donkey").into_bytes(),
+                )))
+                .unwrap();
+            websocket
+                .write(Message::Frame(Frame::from_payload(
+                    FrameHeader {
+                        is_final: true,
+                        opcode: OpCode::Control(Control::Ping),
+                        ..Default::default()
+                    },
+                    Vec::with_capacity(0),
+                )))
+                .unwrap();
+
+            websocket
+                .write(Message::Frame(Frame::from_payload(
+                    FrameHeader {
+                        is_final: true,
+                        opcode: OpCode::Control(Control::Ping),
+                        ..Default::default()
+                    },
+                    Vec::with_capacity(0),
+                )))
+                .unwrap();
+
+            websocket
+                .write(Message::Frame(Frame::from_payload(
+                    FrameHeader {
+                        is_final: true,
+                        opcode: OpCode::Data(Data::Continue),
+                        ..Default::default()
+                    },
+                    String::from("dooby").into_bytes(),
+                )))
+                .unwrap();
+            websocket
+                .write(Message::Frame(Frame::from_payload(
+                    FrameHeader {
+                        is_final: true,
+                        opcode: OpCode::Control(Control::Ping),
+                        ..Default::default()
+                    },
+                    Vec::with_capacity(0),
+                )))
+                .unwrap();
+
+
+            websocket.flush().unwrap();
+
+            println!("sent hello");
+
+            websocket.flush().unwrap();
+            websocket.close(None).unwrap();
+
+            //let msg = websocket.read().unwrap();
+
+            //// We do not want to send back ping/pong messages.
+            //if msg.is_binary() || msg.is_text() {
+            //    websocket.send(msg).unwrap();
+            //}
         });
     }
 }

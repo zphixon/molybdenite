@@ -1,6 +1,6 @@
-use base64::Engine;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use sha1_smol::Sha1;
-use std::{collections::HashMap, str::Utf8Error};
+use std::{collections::HashMap, str::Utf8Error, string::FromUtf8Error};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use url::Url;
@@ -41,16 +41,44 @@ pub enum FrameError {
     InvalidPayloadLen,
 }
 
+#[derive(Error, Debug)]
+pub enum ReceiveError {
+    #[error("The opcode was not expected at this time: {0:?}")]
+    InvalidOpcode(Opcode),
+    #[error("Tried to receive a message on a closed websocket")]
+    SendOnClosed,
+    #[error("The websocket has been closed")]
+    Closed(Option<Close>),
+    #[error("Invalid UTF-8 in Text message")]
+    InvalidUtf8(#[from] FromUtf8Error),
+    #[error("Invalid UTF-8 in Close frame")]
+    InvalidUtf8Close(#[from] Utf8Error),
+}
+
+#[derive(Debug)]
+pub struct Close {
+    pub status: u16,
+    pub reason: String,
+}
+
 impl From<getrandom::Error> for Error {
     fn from(error: getrandom::Error) -> Self {
         Error::GetRandom(error)
     }
 }
 
-#[derive(Error, Debug)]
-pub enum ReceiveError {
-    #[error("The opcode was not expected at this time: {0:?}")]
-    InvalidOpcode(Opcode),
+impl Error {
+    pub fn closed_normally(&self) -> bool {
+        matches!(self, Error::ReceiveError(ReceiveError::Closed(_)))
+    }
+}
+
+#[derive(Debug)]
+pub enum Message {
+    Text(String),
+    Binary(Vec<u8>),
+    Ping(Vec<u8>),
+    Pong(Vec<u8>),
 }
 
 #[derive(Clone, Copy)]
@@ -59,10 +87,20 @@ pub enum Role {
     Server,
 }
 
+enum State {
+    Closed,
+    Open,
+    PartialRead {
+        first_opcode: Opcode,
+        read_payload: Vec<u8>,
+    },
+}
+
 pub struct WebSocket<Stream> {
     stream: Stream,
     secure: bool,
     role: Role,
+    state: State,
 }
 
 impl<Stream> WebSocket<Stream> {
@@ -87,12 +125,13 @@ async fn read_until_crlf_crlf(
     stream: &mut (impl AsyncRead + AsyncWrite + Unpin),
 ) -> Result<Vec<u8>, Error> {
     const CRLF_CRLF: &[u8] = b"\r\n\r\n";
+
     let mut response = Vec::<u8>::new();
     loop {
         let mut buf = [0; 2048];
         let read = stream.read(&mut buf).await?;
         response.extend(buf[..read].iter());
-        if response.ends_with(CRLF_CRLF){
+        if response.ends_with(CRLF_CRLF) {
             break;
         }
     }
@@ -123,7 +162,7 @@ where
 
         let mut key_bytes = [0u8; 16];
         getrandom::getrandom(&mut key_bytes)?;
-        let key_base64 = base64::engine::general_purpose::STANDARD.encode(key_bytes);
+        let key_base64 = BASE64.encode(key_bytes);
 
         let request = format!(
             concat!(
@@ -131,8 +170,8 @@ where
                 "Host: {}:{}\r\n",
                 "Connection: Upgrade\r\n",
                 "Upgrade: websocket\r\n",
-                "Sec-WebSocket-Key: {}\r\n",
                 "Sec-WebSocket-Version: 13\r\n",
+                "Sec-WebSocket-Key: {}\r\n",
                 "\r\n",
             ),
             resource_name, host, port, key_base64,
@@ -199,7 +238,7 @@ where
             Sha1::from(format!("{}{}", key_base64, SEC_WEBSOCKET_ACCEPT_UUID))
                 .digest()
                 .bytes();
-        let expect_sec_websocket_accept_base64 = base64::engine::general_purpose::STANDARD
+        let expect_sec_websocket_accept_base64 = BASE64
             .encode(expect_sec_websocket_accept_bytes)
             .to_lowercase();
 
@@ -216,51 +255,162 @@ where
             stream,
             secure,
             role: Role::Client,
+            state: State::Open,
         })
     }
 
-    pub async fn read(&mut self) -> Result<(), Error> {
-        let frame = Frame::from_stream(&mut self.stream).await?;
-
-        let op = frame.opcode();
-        match op {
-            Opcode::Text | Opcode::Binary | Opcode::Ping | Opcode::Pong => {}
-            Opcode::Close => todo!(),
-            op => return Err(Error::ReceiveError(ReceiveError::InvalidOpcode(op))),
-        }
-
-        let mut fin = frame.fin();
-        let mut payload = frame.payload();
-
-        while !fin {
-            let frame = Frame::from_stream(&mut self.stream).await?;
-            match frame.opcode() {
-                Opcode::Continuation => {}
-                Opcode::Ping | Opcode::Pong | Opcode::Close => todo!(),
-                op => return Err(Error::ReceiveError(ReceiveError::InvalidOpcode(op))),
+    pub async fn read(&mut self) -> Result<Message, Error> {
+        fn closed(frame: Frame, state: &mut State) -> ReceiveError {
+            *state = State::Closed;
+            let payload = frame.payload();
+            match payload[..] {
+                [] | [_] => ReceiveError::Closed(None),
+                [status_high, status_low, ref reason @ ..] => {
+                    let status = u16::from_be_bytes([status_high, status_low]);
+                    match std::str::from_utf8(reason) {
+                        Ok(reason) => ReceiveError::Closed(Some(Close {
+                            status,
+                            reason: reason.into(),
+                        })),
+                        Err(err) => ReceiveError::InvalidUtf8Close(err),
+                    }
+                }
             }
-            fin = frame.fin();
-            payload.extend(frame.payload().into_iter());
         }
 
-        todo!("payload: {:?}", String::from_utf8_lossy(&payload));
+        match &mut self.state {
+            State::Closed => return Err(Error::ReceiveError(ReceiveError::SendOnClosed)),
+
+            state @ State::Open => {
+                let frame = Frame::from_stream(&mut self.stream).await?;
+
+                match frame.opcode() {
+                    Opcode::Text | Opcode::Binary => {}
+                    Opcode::Ping => return Ok(Message::Ping(frame.payload())),
+                    Opcode::Pong => return Ok(Message::Pong(frame.payload())),
+                    Opcode::Close => return Err(Error::ReceiveError(closed(frame, state))),
+                    op => return Err(Error::ReceiveError(ReceiveError::InvalidOpcode(op))),
+                }
+
+                let first_opcode = frame.opcode();
+                let mut final_frame = frame.fin();
+                let mut read_payload = frame.payload();
+
+                while !final_frame {
+                    let frame = Frame::from_stream(&mut self.stream).await?;
+                    final_frame = frame.fin();
+
+                    match frame.opcode() {
+                        Opcode::Continuation => {
+                            read_payload.extend(frame.payload());
+                        }
+
+                        Opcode::Close => return Err(Error::ReceiveError(closed(frame, state))),
+                        Opcode::Ping => {
+                            *state = State::PartialRead {
+                                first_opcode,
+                                read_payload,
+                            };
+                            return Ok(Message::Ping(frame.payload()));
+                        }
+                        Opcode::Pong => {
+                            *state = State::PartialRead {
+                                first_opcode,
+                                read_payload,
+                            };
+                            return Ok(Message::Pong(frame.payload()));
+                        }
+
+                        op => return Err(Error::ReceiveError(ReceiveError::InvalidOpcode(op))),
+                    }
+                }
+
+                match first_opcode {
+                    Opcode::Text => Ok(Message::Text(
+                        String::from_utf8(read_payload).map_err(ReceiveError::from)?,
+                    )),
+
+                    Opcode::Binary => Ok(Message::Binary(read_payload)),
+
+                    _ => unreachable!("Not text or binary"),
+                }
+            }
+
+            state @ State::PartialRead { .. } => {
+                let frame = Frame::from_stream(&mut self.stream).await?;
+                let mut final_frame = frame.fin();
+
+                fn extend(frame: Frame, state: &mut State) -> Result<Option<Message>, Error> {
+                    match frame.opcode() {
+                        Opcode::Continuation => {
+                            let State::PartialRead { read_payload, .. } = state else {
+                                unreachable!("Not partial read");
+                            };
+                            read_payload.extend(frame.payload());
+                            Ok(None)
+                        }
+                        Opcode::Ping => Ok(Some(Message::Ping(frame.payload()))),
+                        Opcode::Pong => Ok(Some(Message::Pong(frame.payload()))),
+                        Opcode::Close => Err(Error::ReceiveError(closed(frame, state))),
+
+                        op => Err(Error::ReceiveError(ReceiveError::InvalidOpcode(op))),
+                    }
+                }
+
+                if let Some(message) = extend(frame, state)? {
+                    return Ok(message);
+                }
+
+                while !final_frame {
+                    let frame = Frame::from_stream(&mut self.stream).await?;
+                    final_frame = frame.fin();
+
+                    if let Some(message) = extend(frame, state)? {
+                        return Ok(message);
+                    }
+                }
+
+                let State::PartialRead {
+                    read_payload,
+                    first_opcode,
+                } = std::mem::replace(state, State::Open)
+                else {
+                    unreachable!("Not partial read");
+                };
+
+                match first_opcode {
+                    Opcode::Text => Ok(Message::Text(
+                        String::from_utf8(read_payload).map_err(ReceiveError::from)?,
+                    )),
+
+                    Opcode::Binary => Ok(Message::Binary(read_payload)),
+
+                    _ => unreachable!("Not text or binary"),
+                }
+            }
+        }
+    }
+
+    pub async fn write(&mut self, message: Message) -> Result<(), Error> {
+        todo!();
     }
 }
 
 #[derive(Debug)]
 struct Frame {
     first_short: u16,
+    #[allow(unused)]
     mask_key: Option<u32>,
     payload: Vec<u8>,
 }
 
-const FIN: u16 = 0b1000_0000_0000_0000;
-const RSV1: u16 = 0b0100_0000_0000_0000;
-const RSV2: u16 = 0b0010_0000_0000_0000;
-const RSV3: u16 = 0b0001_0000_0000_0000;
-const MASK: u16 = 0b0000_1000_0000_0000;
-const OPCODE: u16 = 0b0000_0111_1000_0000;
-const PAYLOAD_LEN: u16 = 0b0000_0000_0111_1111;
+#[rustfmt::skip]                  const FIN: u16         = 0b1000_0000_0000_0000;
+#[rustfmt::skip] #[allow(unused)] const RSV1: u16        = 0b0100_0000_0000_0000;
+#[rustfmt::skip] #[allow(unused)] const RSV2: u16        = 0b0010_0000_0000_0000;
+#[rustfmt::skip] #[allow(unused)] const RSV3: u16        = 0b0001_0000_0000_0000;
+#[rustfmt::skip]                  const OPCODE: u16      = 0b0000_1111_0000_0000;
+#[rustfmt::skip]                  const MASK: u16        = 0b0000_0000_1000_0000;
+#[rustfmt::skip]                  const PAYLOAD_LEN: u16 = 0b0000_0000_0111_1111;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Opcode {
@@ -277,6 +427,7 @@ impl Frame {
     async fn from_stream(
         stream: &mut (impl AsyncRead + AsyncWrite + Unpin),
     ) -> Result<Frame, Error> {
+        // TODO: more performant buffered reading
         let first_short = stream.read_u16().await?;
 
         let payload_len = match (first_short & PAYLOAD_LEN) as u8 {
@@ -330,7 +481,7 @@ impl Frame {
     }
 
     fn opcode(&self) -> Opcode {
-        match (self.first_short & OPCODE) >> 7 {
+        match (self.first_short & OPCODE) >> 8 {
             0 => Opcode::Continuation,
             1 => Opcode::Text,
             2 => Opcode::Binary,
