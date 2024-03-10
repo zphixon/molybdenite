@@ -15,41 +15,21 @@ pub enum Error {
     NoHost,
     #[error("Incorrect scheme, not one of \"ws\" or \"wss\"")]
     IncorrectScheme,
-    #[error("Handshake was not completed: {0}")]
-    HandshakeError(#[from] HandshakeError),
-    #[error("Invalid frame: {0}")]
-    FrameError(#[from] FrameError),
-    #[error("Could not receive message: {0}")]
-    ReceiveError(#[from] ReceiveError),
-}
-
-#[derive(Error, Debug)]
-pub enum HandshakeError {
     #[error("Got an unexpected HTTP status in response: {0}")]
     UnexpectedStatus(String),
-    #[error("Invalid UTF-8")]
-    InvalidUtf8(#[from] Utf8Error),
     #[error("Invalid header line")]
     InvalidHeaderLine(String),
     #[error("Missing or invalid header: {0}")]
     MissingOrInvalidHeader(&'static str),
-}
-
-#[derive(Error, Debug)]
-pub enum FrameError {
     #[error("Invalid payload length")]
     InvalidPayloadLen,
-}
-
-#[derive(Error, Debug)]
-pub enum ReceiveError {
     #[error("The opcode was not expected at this time: {0:?}")]
     InvalidOpcode(Opcode),
-    #[error("Tried to receive a message on a closed websocket")]
-    SendOnClosed,
+    #[error("Tried to send/receive a message on a closed websocket")]
+    WasClosed,
     #[error("The websocket has been closed")]
     Closed(Option<Close>),
-    #[error("Invalid UTF-8 in Text message")]
+    #[error("Invalid UTF-8")]
     InvalidUtf8(#[from] FromUtf8Error),
     #[error("Invalid UTF-8 in Close frame")]
     InvalidUtf8Close(#[from] Utf8Error),
@@ -67,12 +47,6 @@ impl From<getrandom::Error> for Error {
     }
 }
 
-impl Error {
-    pub fn closed_normally(&self) -> bool {
-        matches!(self, Error::ReceiveError(ReceiveError::Closed(_)))
-    }
-}
-
 #[derive(Debug)]
 pub enum Message {
     Text(String),
@@ -83,11 +57,13 @@ pub enum Message {
 
 #[derive(Clone, Copy)]
 pub enum Role {
-    Client,
+    Client { mask: u32 },
     Server,
 }
 
 enum State {
+    SentClose,
+    ReceivedClose,
     Closed,
     Open,
     PartialRead {
@@ -181,15 +157,13 @@ where
         stream.flush().await?;
 
         let response = read_until_crlf_crlf(&mut stream).await?;
-        let response_str = std::str::from_utf8(&response).map_err(HandshakeError::from)?;
+        let response_str = std::str::from_utf8(&response)?;
 
         let mut headers = HashMap::new();
         for (i, line) in response_str.lines().enumerate() {
             if i == 0 {
                 if line != SWITCHING_PROTOCOLS {
-                    return Err(Error::HandshakeError(HandshakeError::UnexpectedStatus(
-                        line.into(),
-                    )));
+                    return Err(Error::UnexpectedStatus(line.into()));
                 } else {
                     continue;
                 }
@@ -202,15 +176,11 @@ where
             let mut split = line.split(": ");
 
             let Some(header) = split.next() else {
-                return Err(Error::HandshakeError(HandshakeError::InvalidHeaderLine(
-                    line.into(),
-                )));
+                return Err(Error::InvalidHeaderLine(line.into()));
             };
 
             let Some(value) = split.next() else {
-                return Err(Error::HandshakeError(HandshakeError::InvalidHeaderLine(
-                    line.into(),
-                )));
+                return Err(Error::InvalidHeaderLine(line.into()));
             };
 
             headers.insert(header.to_lowercase(), value.to_lowercase());
@@ -220,18 +190,14 @@ where
             headers.get("connection").map(|value| value.as_str()),
             Some("upgrade")
         ) {
-            return Err(Error::HandshakeError(
-                HandshakeError::MissingOrInvalidHeader("connection"),
-            ));
+            return Err(Error::MissingOrInvalidHeader("connection"));
         }
 
         if !matches!(
             headers.get("upgrade").map(|value| value.as_str()),
             Some("websocket")
         ) {
-            return Err(Error::HandshakeError(
-                HandshakeError::MissingOrInvalidHeader("upgrade"),
-            ));
+            return Err(Error::MissingOrInvalidHeader("upgrade"));
         }
 
         let expect_sec_websocket_accept_bytes =
@@ -246,40 +212,55 @@ where
             headers.get("sec-websocket-accept").map(|value| value.as_str()),
             Some(sec_websocket_accept_base64) if sec_websocket_accept_base64 == expect_sec_websocket_accept_base64
         ) {
-            return Err(Error::HandshakeError(
-                HandshakeError::MissingOrInvalidHeader("sec-websocket-accept"),
-            ));
+            return Err(Error::MissingOrInvalidHeader("sec-websocket-accept"));
         }
+
+        let mut mask_bytes = [0u8; 4];
+        getrandom::getrandom(&mut mask_bytes)?;
+        let mask = u32::from_le_bytes(mask_bytes);
 
         Ok(WebSocket {
             stream,
             secure,
-            role: Role::Client,
+            role: Role::Client { mask },
             state: State::Open,
         })
     }
 
     pub async fn read(&mut self) -> Result<Message, Error> {
-        fn closed(frame: Frame, state: &mut State) -> ReceiveError {
-            *state = State::Closed;
+        fn got_close(frame: Frame, state: &mut State) -> Error {
+            *state = State::ReceivedClose;
             let payload = frame.payload();
             match payload[..] {
-                [] | [_] => ReceiveError::Closed(None),
+                [] | [_] => Error::Closed(None),
                 [status_high, status_low, ref reason @ ..] => {
                     let status = u16::from_be_bytes([status_high, status_low]);
                     match std::str::from_utf8(reason) {
-                        Ok(reason) => ReceiveError::Closed(Some(Close {
+                        Ok(reason) => Error::Closed(Some(Close {
                             status,
                             reason: reason.into(),
                         })),
-                        Err(err) => ReceiveError::InvalidUtf8Close(err),
+                        Err(err) => Error::InvalidUtf8Close(err),
                     }
                 }
             }
         }
 
         match &mut self.state {
-            State::Closed => return Err(Error::ReceiveError(ReceiveError::SendOnClosed)),
+            State::Closed | State::ReceivedClose => return Err(Error::WasClosed),
+
+            state @ State::SentClose => {
+                let frame = Frame::from_stream(&mut self.stream).await?;
+                match frame.opcode() {
+                    Opcode::Close => {
+                        let result = Err(got_close(frame, state));
+                        *state = State::Closed;
+                        result
+                    }
+
+                    op => Err(Error::InvalidOpcode(op)),
+                }
+            }
 
             state @ State::Open => {
                 let frame = Frame::from_stream(&mut self.stream).await?;
@@ -288,8 +269,8 @@ where
                     Opcode::Text | Opcode::Binary => {}
                     Opcode::Ping => return Ok(Message::Ping(frame.payload())),
                     Opcode::Pong => return Ok(Message::Pong(frame.payload())),
-                    Opcode::Close => return Err(Error::ReceiveError(closed(frame, state))),
-                    op => return Err(Error::ReceiveError(ReceiveError::InvalidOpcode(op))),
+                    Opcode::Close => return Err(got_close(frame, state)),
+                    op => return Err(Error::InvalidOpcode(op)),
                 }
 
                 let first_opcode = frame.opcode();
@@ -305,7 +286,7 @@ where
                             read_payload.extend(frame.payload());
                         }
 
-                        Opcode::Close => return Err(Error::ReceiveError(closed(frame, state))),
+                        Opcode::Close => return Err(got_close(frame, state)),
                         Opcode::Ping => {
                             *state = State::PartialRead {
                                 first_opcode,
@@ -321,14 +302,12 @@ where
                             return Ok(Message::Pong(frame.payload()));
                         }
 
-                        op => return Err(Error::ReceiveError(ReceiveError::InvalidOpcode(op))),
+                        op => return Err(Error::InvalidOpcode(op)),
                     }
                 }
 
                 match first_opcode {
-                    Opcode::Text => Ok(Message::Text(
-                        String::from_utf8(read_payload).map_err(ReceiveError::from)?,
-                    )),
+                    Opcode::Text => Ok(Message::Text(String::from_utf8(read_payload)?)),
 
                     Opcode::Binary => Ok(Message::Binary(read_payload)),
 
@@ -351,9 +330,9 @@ where
                         }
                         Opcode::Ping => Ok(Some(Message::Ping(frame.payload()))),
                         Opcode::Pong => Ok(Some(Message::Pong(frame.payload()))),
-                        Opcode::Close => Err(Error::ReceiveError(closed(frame, state))),
+                        Opcode::Close => Err(got_close(frame, state)),
 
-                        op => Err(Error::ReceiveError(ReceiveError::InvalidOpcode(op))),
+                        op => Err(Error::InvalidOpcode(op)),
                     }
                 }
 
@@ -379,9 +358,7 @@ where
                 };
 
                 match first_opcode {
-                    Opcode::Text => Ok(Message::Text(
-                        String::from_utf8(read_payload).map_err(ReceiveError::from)?,
-                    )),
+                    Opcode::Text => Ok(Message::Text(String::from_utf8(read_payload)?)),
 
                     Opcode::Binary => Ok(Message::Binary(read_payload)),
 
@@ -392,7 +369,58 @@ where
     }
 
     pub async fn write(&mut self, message: Message) -> Result<(), Error> {
-        todo!();
+        match self.state {
+            State::SentClose | State::ReceivedClose | State::Closed => {
+                return Err(Error::WasClosed)
+            }
+            _ => {}
+        }
+
+        let opcode: u8 = match &message {
+            Message::Text(_) => 1,
+            Message::Binary(_) => 2,
+            Message::Ping(_) => 9,
+            Message::Pong(_) => 10,
+        };
+
+        Frame::to_stream(
+            opcode,
+            match &message {
+                Message::Text(text) => text.as_bytes(),
+                Message::Binary(data) | Message::Ping(data) | Message::Pong(data) => {
+                    data.as_slice()
+                }
+            },
+            match self.role() {
+                Role::Client { mask } => Some(mask),
+                Role::Server => None,
+            },
+            self.stream_mut(),
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn close(&mut self) -> Result<(), Error> {
+        if matches!(self.state, State::Closed) {
+            return Err(Error::WasClosed);
+        }
+
+        Frame::to_stream(
+            8,
+            &[],
+            match self.role() {
+                Role::Client { mask } => Some(mask),
+                Role::Server => None,
+            },
+            self.stream_mut(),
+        )
+        .await?;
+
+        self.state = State::SentClose;
+
+        Ok(())
     }
 }
 
@@ -424,6 +452,46 @@ pub enum Opcode {
 }
 
 impl Frame {
+    async fn to_stream(
+        opcode: u8,
+        payload: &[u8],
+        mask: Option<u32>,
+        stream: &mut (impl AsyncRead + AsyncWrite + Unpin),
+    ) -> Result<(), Error> {
+        let mut bytes = Vec::with_capacity(128);
+
+        let payload_len_byte = match payload.len() {
+            0..=125 => payload.len(),
+            126.. if payload.len() as u64 <= u32::MAX as u64 => 126,
+            126.. => 127,
+        } as u8;
+
+        bytes.push((FIN >> 8) as u8 | opcode);
+        bytes.push((if mask.is_some() { MASK as u8 } else { 0 }) | payload_len_byte);
+
+        match payload_len_byte {
+            0..=125 => {}
+            126 => bytes.extend((payload.len() as u16).to_be_bytes()),
+            127 => bytes.extend((payload.len() as u64).to_be_bytes()),
+            _ => unreachable!("Incorrect payload len byte"),
+        }
+
+        if let Some(mask) = mask {
+            bytes.extend(mask.to_be_bytes());
+            let mask_bytes = mask.to_be_bytes();
+            bytes.extend(payload.iter().enumerate().map(|(i, byte)| {
+                let j = i % 4;
+                byte ^ mask_bytes[j]
+            }));
+        } else {
+            bytes.extend(payload);
+        }
+
+        stream.write_all(&bytes).await?;
+
+        Ok(())
+    }
+
     async fn from_stream(
         stream: &mut (impl AsyncRead + AsyncWrite + Unpin),
     ) -> Result<Frame, Error> {

@@ -28,12 +28,30 @@ async fn do_connect(url: Url, stream: impl AsyncReadExt + AsyncWriteExt + Unpin)
 
     loop {
         match ws.read().await {
-            Ok(message) => {
-                println!("server sent: {:?}", message);
-            }
+            Ok(message) => match message {
+                molybdenite::Message::Text(text) => {
+                    println!("server sent text: {:?}", text);
+                }
 
-            Err(err) if err.closed_normally() => {
-                println!("closed normally");
+                molybdenite::Message::Binary(data) => {
+                    println!("server sent binary: {:?}", data);
+                }
+
+                molybdenite::Message::Ping(data) => {
+                    println!("server sent ping: {:?}", data);
+                    ws.write(molybdenite::Message::Pong(data)).await?;
+                    ws.stream_mut().flush().await?;
+                }
+
+                molybdenite::Message::Pong(data) => {
+                    println!("server sent pong: {:?}", data);
+                }
+            },
+
+            Err(molybdenite::Error::Closed(_)) => {
+                println!("server closed normally");
+                ws.close().await?;
+                ws.stream_mut().flush().await?;
                 break;
             }
 

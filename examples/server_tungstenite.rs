@@ -40,7 +40,7 @@ fn main() {
                         opcode: OpCode::Control(Control::Ping),
                         ..Default::default()
                     },
-                    Vec::with_capacity(0),
+                    String::from("Hello").into_bytes(),
                 )))
                 .unwrap();
 
@@ -130,20 +130,21 @@ fn main() {
                 )))
                 .unwrap();
 
-
             websocket.flush().unwrap();
 
             println!("sent hello");
 
-            websocket.flush().unwrap();
+            let mesg = websocket.read().unwrap();
+            println!("client sent {:?}", mesg);
+
             websocket.close(None).unwrap();
+            let mut msg = websocket.read().unwrap();
+            while !msg.is_close() {
+                println!("closing client sent {:?}", msg);
+                msg = websocket.read().unwrap();
+            }
 
-            //let msg = websocket.read().unwrap();
-
-            //// We do not want to send back ping/pong messages.
-            //if msg.is_binary() || msg.is_text() {
-            //    websocket.send(msg).unwrap();
-            //}
+            println!("done");
         });
     }
 }
