@@ -40,7 +40,7 @@ async fn do_connect(url: Url, stream: impl AsyncReadExt + AsyncWriteExt + Unpin)
                 molybdenite::Message::Ping(data) => {
                     println!("server sent ping: {:?}", data);
                     ws.write(molybdenite::Message::Pong(data)).await?;
-                    ws.stream_mut().flush().await?;
+                    ws.flush().await?;
                 }
 
                 molybdenite::Message::Pong(data) => {
@@ -51,7 +51,7 @@ async fn do_connect(url: Url, stream: impl AsyncReadExt + AsyncWriteExt + Unpin)
             Err(molybdenite::Error::Closed(_)) => {
                 println!("server closed normally");
                 ws.close().await?;
-                ws.stream_mut().flush().await?;
+                ws.flush().await?;
                 break;
             }
 

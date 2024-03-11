@@ -19,20 +19,30 @@ struct Args {
     cert: Option<PathBuf>,
 }
 
-async fn handle(mut stream: impl AsyncReadExt + AsyncWriteExt + Unpin) -> Result<()> {
-    let mut request = Vec::<u8>::new();
+async fn handle(stream: impl AsyncReadExt + AsyncWriteExt + Unpin, secure: bool) -> Result<()> {
+    let mut ws = molybdenite::WebSocket::server_from_stream(secure, stream).await?;
+
+    ws.write(molybdenite::Message::Text("dumptydonkeydooby".into()))
+        .await?;
+    ws.flush().await?;
+
+    ws.close().await?;
+    ws.flush().await?;
     loop {
-        let mut buf = [0; 2048];
-        let read = stream.read(&mut buf).await?;
-        request.extend(buf[..read].iter());
-        if read < 4 || &buf[read - 4..read] == b"\r\n\r\n" {
-            break;
+        match ws.read().await {
+            Ok(msg) => {
+                println!("client sent: {:?}", msg);
+            }
+
+            Err(molybdenite::Error::Closed(_)) => {
+                println!("client closed");
+                break;
+            }
+
+            Err(err) => anyhow::bail!(err),
         }
     }
-    let request_str = std::str::from_utf8(&request).context("request utf8")?;
-    println!("client sent: {:?}", request_str);
 
-    stream.shutdown().await.context("shutdown")?;
     Ok(())
 }
 
@@ -74,14 +84,14 @@ async fn main() -> Result<()> {
                 println!("new client at {}", peer_addr);
 
                 let acceptor = acceptor.clone();
-                let future = async move {
-                    let stream = acceptor.accept(stream).await.context("accept tls tls")?;
-                    handle(stream).await.context("handle")?;
-                    Result::<()>::Ok(())
-                };
 
                 tokio::spawn(async move {
-                    if let Err(err) = future.await {
+                    let Ok(stream) = acceptor.accept(stream).await.context("accept tls tls") else {
+                        println!("tls broke");
+                        return;
+                    };
+
+                    if let Err(err) = handle(stream, true).await {
                         println!("error: {:?}", err);
                     }
                 });
@@ -95,7 +105,7 @@ async fn main() -> Result<()> {
                 println!("new client at {}", peer_addr);
 
                 let future = async move {
-                    handle(stream).await.context("handle")?;
+                    handle(stream, false).await.context("handle")?;
                     Result::<()>::Ok(())
                 };
 

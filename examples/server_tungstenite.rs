@@ -134,8 +134,8 @@ fn main() {
 
             println!("sent hello");
 
-            let mesg = websocket.read().unwrap();
-            println!("client sent {:?}", mesg);
+            //let mesg = websocket.read().unwrap();
+            //println!("client sent {:?}", mesg);
 
             websocket.close(None).unwrap();
             let mut msg = websocket.read().unwrap();
