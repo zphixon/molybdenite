@@ -600,17 +600,7 @@ impl<Reader: AsyncReadExt + Unpin> FrameReader<Reader> {
 
             let mut buffer = Vec::with_capacity(4096);
 
-            let read = match tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                self.reader.read_buf(&mut buffer),
-            )
-            .await
-            {
-                Ok(read) => read?,
-                Err(_timeout) => {
-                    continue;
-                }
-            };
+            let read = self.reader.read_buf(&mut buffer).await?;
             self.data.extend(buffer.iter());
             self.end_read += read;
         }
