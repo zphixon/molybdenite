@@ -24,7 +24,11 @@ struct Args {
 }
 
 async fn do_connect(url: Url, stream: impl AsyncReadExt + AsyncWriteExt + Unpin) -> Result<()> {
+    let stream = BufStream::new(stream);
     let mut ws = molybdenite::WebSocket::client_from_stream(url, stream).await?;
+
+    ws.write(molybdenite::Message::Ping(Vec::new())).await?;
+    ws.flush().await?;
 
     loop {
         match ws.read().await {
@@ -115,9 +119,8 @@ async fn main() -> Result<()> {
 
         do_connect(args.request, tls_stream).await?;
     } else {
-        let buf_stream = BufStream::new(TcpStream::connect(addr).await.context("connect")?);
-
-        do_connect(args.request, buf_stream).await?;
+        let stream = TcpStream::connect(addr).await.context("connect")?;
+        do_connect(args.request, stream).await?;
     }
 
     Ok(())

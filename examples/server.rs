@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use std::{fs::File, io::BufReader, net::ToSocketAddrs, path::PathBuf, sync::Arc};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncWriteExt, BufStream},
     net::TcpListener,
 };
 use tokio_rustls::{rustls::ServerConfig, TlsAcceptor};
@@ -19,7 +19,7 @@ struct Args {
     cert: Option<PathBuf>,
 }
 
-async fn handle(stream: impl AsyncReadExt + AsyncWriteExt + Unpin, secure: bool) -> Result<()> {
+async fn handle(stream: BufStream<impl AsyncReadExt + AsyncWriteExt + Unpin>, secure: bool) -> Result<()> {
     let mut ws = molybdenite::WebSocket::server_from_stream(secure, stream).await?;
 
     ws.write(molybdenite::Message::Text("dumptydonkeydooby".into()))
@@ -91,6 +91,7 @@ async fn main() -> Result<()> {
                         return;
                     };
 
+                    let stream = BufStream::new(stream);
                     if let Err(err) = handle(stream, true).await {
                         println!("error: {:?}", err);
                     }
@@ -105,6 +106,7 @@ async fn main() -> Result<()> {
                 println!("new client at {}", peer_addr);
 
                 tokio::spawn(async move {
+                    let stream = BufStream::new(stream);
                     if let Err(err) = handle(stream, false).await.context("handle") {
                         println!("error: {:?}", err);
                     }

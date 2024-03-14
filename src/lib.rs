@@ -5,7 +5,7 @@ use frame::{Frame, FrameStream, Opcode};
 use sha1_smol::Sha1;
 use std::{collections::HashMap, str::Utf8Error, string::FromUtf8Error};
 use thiserror::Error;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufStream};
 use url::Url;
 
 #[derive(Error, Debug)]
@@ -88,22 +88,21 @@ pub enum State {
 }
 
 pub struct WebSocket<Stream> {
-    stream: FrameStream<Stream>,
+    stream: FrameStream<BufStream<Stream>>,
     secure: bool,
     role: Role,
     pub state: State,
 }
 
 async fn read_until_crlf_crlf(
-    stream: &mut (impl AsyncRead + AsyncWrite + Unpin),
+    stream: &mut BufStream<impl AsyncRead + AsyncWrite + Unpin>,
 ) -> Result<Vec<u8>, Error> {
     const CRLF_CRLF: &[u8] = b"\r\n\r\n";
 
     let mut response = Vec::new();
 
-    let mut buf_reader = BufReader::new(stream);
     while !response.ends_with(CRLF_CRLF) {
-        buf_reader.read_until(b'\n', &mut response).await?;
+        stream.read_until(b'\n', &mut response).await?;
     }
 
     Ok(response)
@@ -125,11 +124,10 @@ where
     }
 
     pub async fn flush(&mut self) -> Result<(), Error> {
-        //self.writer.flush().await?;
-        Ok(())
+        self.stream.flush().await
     }
 
-    pub async fn server_from_stream(secure: bool, mut stream: Stream) -> Result<Self, Error> {
+    pub async fn server_from_stream(secure: bool, mut stream: BufStream<Stream>) -> Result<Self, Error> {
         let request_bytes = read_until_crlf_crlf(&mut stream).await?;
         let request_str = std::str::from_utf8(&request_bytes)?;
 
@@ -213,7 +211,7 @@ where
         })
     }
 
-    pub async fn client_from_stream(url: Url, mut stream: Stream) -> Result<Self, Error> {
+    pub async fn client_from_stream(url: Url, mut stream: BufStream<Stream>) -> Result<Self, Error> {
         let ("ws" | "wss") = url.scheme() else {
             return Err(Error::IncorrectScheme);
         };

@@ -25,6 +25,7 @@ fn main() {
             println!("got client");
             let mut websocket = accept(stream.unwrap()).unwrap();
             println!("accepted handshake");
+
             websocket
                 .write(Message::Frame(Frame::from_payload(
                     FrameHeader {
@@ -36,6 +37,8 @@ fn main() {
                 )))
                 .unwrap();
 
+            websocket.flush().unwrap();
+
             websocket
                 .write(Message::Frame(Frame::from_payload(
                     FrameHeader {
@@ -46,6 +49,9 @@ fn main() {
                     Vec::with_capacity(0),
                 )))
                 .unwrap();
+
+            websocket.flush().unwrap();
+
             websocket
                 .write(Message::Frame(Frame::from_payload(
                     FrameHeader {
@@ -57,16 +63,7 @@ fn main() {
                 )))
                 .unwrap();
 
-            websocket
-                .write(Message::Frame(Frame::from_payload(
-                    FrameHeader {
-                        is_final: true,
-                        opcode: OpCode::Control(Control::Ping),
-                        ..Default::default()
-                    },
-                    Vec::with_capacity(0),
-                )))
-                .unwrap();
+            websocket.flush().unwrap();
 
             websocket
                 .write(Message::Frame(Frame::from_payload(
@@ -79,6 +76,8 @@ fn main() {
                 )))
                 .unwrap();
 
+            websocket.flush().unwrap();
+
             websocket
                 .write(Message::Frame(Frame::from_payload(
                     FrameHeader {
@@ -89,6 +88,21 @@ fn main() {
                     Vec::with_capacity(0),
                 )))
                 .unwrap();
+
+            websocket.flush().unwrap();
+
+            websocket
+                .write(Message::Frame(Frame::from_payload(
+                    FrameHeader {
+                        is_final: true,
+                        opcode: OpCode::Control(Control::Ping),
+                        ..Default::default()
+                    },
+                    Vec::with_capacity(0),
+                )))
+                .unwrap();
+
+            websocket.flush().unwrap();
 
             websocket
                 .write(Message::Frame(Frame::from_payload(
@@ -100,16 +114,8 @@ fn main() {
                     String::from("donkey").into_bytes(),
                 )))
                 .unwrap();
-            websocket
-                .write(Message::Frame(Frame::from_payload(
-                    FrameHeader {
-                        is_final: true,
-                        opcode: OpCode::Control(Control::Ping),
-                        ..Default::default()
-                    },
-                    Vec::with_capacity(0),
-                )))
-                .unwrap();
+
+            websocket.flush().unwrap();
 
             websocket
                 .write(Message::Frame(Frame::from_payload(
@@ -121,6 +127,21 @@ fn main() {
                     Vec::with_capacity(0),
                 )))
                 .unwrap();
+
+            websocket.flush().unwrap();
+
+            websocket
+                .write(Message::Frame(Frame::from_payload(
+                    FrameHeader {
+                        is_final: true,
+                        opcode: OpCode::Control(Control::Ping),
+                        ..Default::default()
+                    },
+                    Vec::with_capacity(0),
+                )))
+                .unwrap();
+
+            websocket.flush().unwrap();
 
             websocket
                 .write(Message::Frame(Frame::from_payload(
@@ -132,6 +153,9 @@ fn main() {
                     String::from("dooby").into_bytes(),
                 )))
                 .unwrap();
+
+            websocket.flush().unwrap();
+
             websocket
                 .write(Message::Frame(Frame::from_payload(
                     FrameHeader {
@@ -151,6 +175,9 @@ fn main() {
             //println!("client sent {:?}", mesg);
 
             websocket.close(None).unwrap();
+
+            websocket.flush().unwrap();
+
             let mut msg = websocket.read().unwrap();
             while !msg.is_close() {
                 println!("closing client sent {:?}", msg);

@@ -111,6 +111,11 @@ where
         }
     }
 
+    pub async fn flush(&mut self) -> Result<(), Error> {
+        self.stream.flush().await?;
+        Ok(())
+    }
+
     pub async fn read_frame(&mut self) -> Result<Option<Frame>, Error> {
         loop {
             if let Some(frame) = self.parse_frame()? {
