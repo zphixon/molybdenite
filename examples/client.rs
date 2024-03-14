@@ -115,13 +115,9 @@ async fn main() -> Result<()> {
 
         do_connect(args.request, tls_stream).await?;
     } else {
-            let buf_stream = BufStream::new(TcpStream::connect(addr).await.context("connect")?);
+        let buf_stream = BufStream::new(TcpStream::connect(addr).await.context("connect")?);
 
-        do_connect(
-            args.request,
-            buf_stream,
-        )
-        .await?;
+        do_connect(args.request, buf_stream).await?;
     }
 
     Ok(())

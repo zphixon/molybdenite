@@ -8,7 +8,6 @@ struct Args {
     request: Url,
 }
 
-
 fn main() -> Result<()> {
     let Args { request } = argh::from_env();
 
@@ -19,7 +18,7 @@ fn main() -> Result<()> {
             tungstenite::Message::Close(_) => {
                 println!("server closed");
                 break;
-            },
+            }
             msg => println!("server sent: {:?}", msg),
         }
     }

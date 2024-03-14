@@ -1,9 +1,7 @@
-use std::mem::size_of;
-
-use bytes::BytesMut;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
-
 use crate::{Error, Message};
+use bytes::BytesMut;
+use std::mem::size_of;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
 
 pub const FIN: u16 = 0b1000_0000_0000_0000;
 //pub const RSV1: u16 = 0b0100_0000_0000_0000;

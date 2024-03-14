@@ -1,23 +1,19 @@
-use std::net::TcpListener;
-use std::path::PathBuf;
-use std::thread::spawn;
-use tungstenite::protocol::frame::coding::{Control, Data, OpCode};
-use tungstenite::protocol::frame::{Frame, FrameHeader};
-use tungstenite::{accept, Message};
+use std::{net::TcpListener, thread::spawn};
+use tungstenite::{
+    accept,
+    protocol::frame::{
+        coding::{Control, Data, OpCode},
+        Frame, FrameHeader,
+    },
+    Message,
+};
 
 #[derive(argh::FromArgs)]
 #[argh(description = "server example")]
 struct Args {
     #[argh(option, description = "address to bind to")]
     bind: String,
-
-    #[argh(option, description = "cert private key")]
-    key: Option<PathBuf>,
-
-    #[argh(option, description = "certificate")]
-    cert: Option<PathBuf>,
 }
-
 
 /// A WebSocket echo server
 fn main() {

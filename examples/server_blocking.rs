@@ -21,7 +21,7 @@ struct Args {
     cert: Option<PathBuf>,
 }
 
-fn handle(mut stream: impl Read + Write, secure: bool) -> Result<()> {
+fn handle(mut stream: impl Read + Write, _secure: bool) -> Result<()> {
     let buf_read = BufReader::new(&mut stream);
     for line in buf_read.lines() {
         println!("{:?}", line);

@@ -1,23 +1,11 @@
 mod frame;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-use bytes::{BufMut, BytesMut};
-use frame::Frame;
-use frame::{FrameStream, Opcode};
+use frame::{Frame, FrameStream, Opcode};
 use sha1_smol::Sha1;
-use std::{
-    collections::{HashMap, VecDeque},
-    io::Cursor,
-    str::Utf8Error,
-    string::FromUtf8Error,
-};
+use std::{collections::HashMap, str::Utf8Error, string::FromUtf8Error};
 use thiserror::Error;
-use tokio::io::{
-    AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter,
-    ReadHalf, WriteHalf,
-};
-use tokio_stream::{Stream, StreamExt};
-use tokio_util::codec::{Decoder, Encoder, FramedRead, FramedWrite};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use url::Url;
 
 #[derive(Error, Debug)]
