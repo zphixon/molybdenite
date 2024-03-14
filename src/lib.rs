@@ -1,4 +1,9 @@
+mod frame;
+
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use bytes::{BufMut, BytesMut};
+use frame::Frame;
+use frame::{FrameStream, Opcode};
 use sha1_smol::Sha1;
 use std::{
     collections::{HashMap, VecDeque},
@@ -8,9 +13,11 @@ use std::{
 };
 use thiserror::Error;
 use tokio::io::{
-    AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, ReadHalf,
-    WriteHalf,
+    AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter,
+    ReadHalf, WriteHalf,
 };
+use tokio_stream::{Stream, StreamExt};
+use tokio_util::codec::{Decoder, Encoder, FramedRead, FramedWrite};
 use url::Url;
 
 #[derive(Error, Debug)]
@@ -65,16 +72,25 @@ pub enum Message {
     Pong(Vec<u8>),
 }
 
+impl Message {
+    fn into_bytes_opcode(self) -> (Vec<u8>, Opcode) {
+        match self {
+            Message::Text(text) => (text.into_bytes(), Opcode::Text),
+            Message::Binary(data) => (data, Opcode::Binary),
+            Message::Ping(data) => (data, Opcode::Ping),
+            Message::Pong(data) => (data, Opcode::Pong),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub enum Role {
-    Client { mask: u32 },
+    Client,
     Server,
 }
 
 #[derive(Debug)]
 pub enum State {
-    SentClose,
-    ReceivedClose,
     Closed,
     Open,
     PartialRead {
@@ -84,8 +100,7 @@ pub enum State {
 }
 
 pub struct WebSocket<Stream> {
-    reader: FrameReader<ReadHalf<Stream>>,
-    writer: WriteHalf<Stream>,
+    stream: FrameStream<Stream>,
     secure: bool,
     role: Role,
     pub state: State,
@@ -122,7 +137,7 @@ where
     }
 
     pub async fn flush(&mut self) -> Result<(), Error> {
-        self.writer.flush().await?;
+        //self.writer.flush().await?;
         Ok(())
     }
 
@@ -202,10 +217,8 @@ where
         stream.write_all(response.as_bytes()).await?;
         stream.flush().await?;
 
-        let (reader, writer) = tokio::io::split(stream);
         Ok(WebSocket {
-            reader: FrameReader::new(reader),
-            writer,
+            stream: FrameStream::new(stream, None),
             secure,
             role: Role::Server,
             state: State::Open,
@@ -294,21 +307,28 @@ where
 
         let mut mask_bytes = [0u8; 4];
         getrandom::getrandom(&mut mask_bytes)?;
-        let mask = u32::from_le_bytes(mask_bytes);
+        let mask_key = u32::from_le_bytes(mask_bytes);
 
-        let (reader, writer) = tokio::io::split(stream);
         Ok(WebSocket {
-            reader: FrameReader::new(reader),
-            writer,
+            stream: FrameStream::new(stream, Some(mask_key)),
             secure,
-            role: Role::Client { mask },
+            role: Role::Client,
             state: State::Open,
         })
     }
 
+    async fn next_frame(&mut self) -> Result<Frame, Error> {
+        match self.stream.read_frame().await? {
+            Some(frame) => Ok(frame),
+            None => {
+                self.state = State::Closed;
+                Err(Error::Closed(None))
+            }
+        }
+    }
+
     pub async fn read(&mut self) -> Result<Message, Error> {
-        fn got_close(frame: Frame, state: &mut State) -> Error {
-            *state = State::ReceivedClose;
+        fn got_close(frame: Frame) -> Error {
             let payload = frame.payload();
             match payload[..] {
                 [] | [_] => Error::Closed(None),
@@ -325,30 +345,17 @@ where
             }
         }
 
-        match &mut self.state {
-            State::Closed | State::ReceivedClose => return Err(Error::WasClosed),
+        match self.state {
+            State::Closed => return Err(Error::WasClosed),
 
-            state @ State::SentClose => {
-                let frame = self.reader.read().await?;
-                match frame.opcode() {
-                    Opcode::Close => {
-                        let result = Err(got_close(frame, state));
-                        *state = State::Closed;
-                        result
-                    }
-
-                    op => Err(Error::InvalidOpcode(op)),
-                }
-            }
-
-            state @ State::Open => {
-                let frame = self.reader.read().await?;
+            State::Open => {
+                let frame = self.next_frame().await?;
 
                 match frame.opcode() {
                     Opcode::Text | Opcode::Binary => {}
                     Opcode::Ping => return Ok(Message::Ping(frame.payload())),
                     Opcode::Pong => return Ok(Message::Pong(frame.payload())),
-                    Opcode::Close => return Err(got_close(frame, state)),
+                    Opcode::Close => return Err(got_close(frame)),
                     op => return Err(Error::InvalidOpcode(op)),
                 }
 
@@ -357,7 +364,7 @@ where
                 let mut read_payload = frame.payload();
 
                 while !final_frame {
-                    let frame = self.reader.read().await?;
+                    let frame = self.next_frame().await?;
                     final_frame = frame.fin();
 
                     match frame.opcode() {
@@ -365,16 +372,16 @@ where
                             read_payload.extend(frame.payload());
                         }
 
-                        Opcode::Close => return Err(got_close(frame, state)),
+                        Opcode::Close => return Err(got_close(frame)),
                         Opcode::Ping => {
-                            *state = State::PartialRead {
+                            self.state = State::PartialRead {
                                 first_opcode,
                                 read_payload,
                             };
                             return Ok(Message::Ping(frame.payload()));
                         }
                         Opcode::Pong => {
-                            *state = State::PartialRead {
+                            self.state = State::PartialRead {
                                 first_opcode,
                                 read_payload,
                             };
@@ -392,8 +399,8 @@ where
                 }
             }
 
-            state @ State::PartialRead { .. } => {
-                let frame = self.reader.read().await?;
+            State::PartialRead { .. } => {
+                let frame = self.next_frame().await?;
                 let mut final_frame = frame.fin();
 
                 fn extend(frame: Frame, state: &mut State) -> Result<Option<Message>, Error> {
@@ -407,21 +414,21 @@ where
                         }
                         Opcode::Ping => Ok(Some(Message::Ping(frame.payload()))),
                         Opcode::Pong => Ok(Some(Message::Pong(frame.payload()))),
-                        Opcode::Close => Err(got_close(frame, state)),
+                        Opcode::Close => Err(got_close(frame)),
 
                         op => Err(Error::InvalidOpcode(op)),
                     }
                 }
 
-                if let Some(message) = extend(frame, state)? {
+                if let Some(message) = extend(frame, &mut self.state)? {
                     return Ok(message);
                 }
 
                 while !final_frame {
-                    let frame = self.reader.read().await?;
+                    let frame = self.next_frame().await?;
                     final_frame = frame.fin();
 
-                    if let Some(message) = extend(frame, state)? {
+                    if let Some(message) = extend(frame, &mut self.state)? {
                         return Ok(message);
                     }
                 }
@@ -429,7 +436,7 @@ where
                 let State::PartialRead {
                     read_payload,
                     first_opcode,
-                } = std::mem::replace(state, State::Open)
+                } = std::mem::replace(&mut self.state, State::Open)
                 else {
                     unreachable!("Not partial read");
                 };
@@ -444,272 +451,10 @@ where
     }
 
     pub async fn write(&mut self, message: Message) -> Result<(), Error> {
-        match self.state {
-            State::SentClose | State::ReceivedClose | State::Closed => {
-                return Err(Error::WasClosed)
-            }
-            _ => {}
-        }
-
-        let opcode: u8 = match &message {
-            Message::Text(_) => 1,
-            Message::Binary(_) => 2,
-            Message::Ping(_) => 9,
-            Message::Pong(_) => 10,
-        };
-
-        Frame::to_stream(
-            opcode,
-            match &message {
-                Message::Text(text) => text.as_bytes(),
-                Message::Binary(data) | Message::Ping(data) | Message::Pong(data) => {
-                    data.as_slice()
-                }
-            },
-            match self.role() {
-                Role::Client { mask } => Some(mask),
-                Role::Server => None,
-            },
-            &mut self.writer,
-        )
-        .await?;
-
-        Ok(())
+        self.stream.write_message(message).await
     }
 
     pub async fn close(&mut self) -> Result<(), Error> {
-        if matches!(self.state, State::Closed) {
-            return Err(Error::WasClosed);
-        }
-
-        Frame::to_stream(
-            8,
-            &[],
-            match self.role() {
-                Role::Client { mask } => Some(mask),
-                Role::Server => None,
-            },
-            &mut self.writer,
-        )
-        .await?;
-
-        self.state = State::SentClose;
-
-        Ok(())
+        self.stream.write_close().await
     }
 }
-
-#[rustfmt::skip]                  const FIN: u16         = 0b1000_0000_0000_0000;
-#[rustfmt::skip] #[allow(unused)] const RSV1: u16        = 0b0100_0000_0000_0000;
-#[rustfmt::skip] #[allow(unused)] const RSV2: u16        = 0b0010_0000_0000_0000;
-#[rustfmt::skip] #[allow(unused)] const RSV3: u16        = 0b0001_0000_0000_0000;
-#[rustfmt::skip]                  const OPCODE: u16      = 0b0000_1111_0000_0000;
-#[rustfmt::skip]                  const MASK: u16        = 0b0000_0000_1000_0000;
-#[rustfmt::skip]                  const PAYLOAD_LEN: u16 = 0b0000_0000_0111_1111;
-
-struct FrameReader<Reader> {
-    data: Vec<u8>,
-    end_read: usize,
-    reader: Reader,
-}
-
-impl<Reader: AsyncReadExt + Unpin> FrameReader<Reader> {
-    fn new(reader: Reader) -> Self {
-        FrameReader {
-            data: Vec::with_capacity(4096),
-            end_read: 0,
-            reader,
-        }
-    }
-
-    async fn read(&mut self) -> Result<Frame, Error> {
-        use std::mem::size_of;
-
-        const FIRST_SHORT_SIZE: usize = size_of::<u16>();
-        const EXTENDED_PAYLOAD_SIZE: usize = size_of::<u16>();
-        const BIG_EXTENDED_PAYLOAD_SIZE: usize = size_of::<u64>();
-        const MASK_KEY_SIZE: usize = size_of::<u32>();
-
-        let mut frame_size;
-        let mut first_short;
-        let mut mask_key;
-        let mut header_size;
-
-        'cause_got_full_frame: loop {
-            'to_read_more_bytes: loop {
-                let read_buf = &self.data[..self.end_read];
-                if read_buf.len() < FIRST_SHORT_SIZE {
-                    break 'to_read_more_bytes;
-                }
-
-                first_short = u16::from_be_bytes([read_buf[0], read_buf[1]]);
-                let payload_len_size = match first_short & PAYLOAD_LEN {
-                    0..=125 => 0,
-                    126 => EXTENDED_PAYLOAD_SIZE,
-                    127 => BIG_EXTENDED_PAYLOAD_SIZE,
-                    _ => unreachable!(),
-                };
-                let mask_key_size = if first_short & MASK != 0 {
-                    MASK_KEY_SIZE
-                } else {
-                    0
-                };
-                header_size = FIRST_SHORT_SIZE + payload_len_size + mask_key_size;
-                if read_buf.len() < header_size {
-                    break 'to_read_more_bytes;
-                }
-
-                let payload_len = match payload_len_size {
-                    0 => (first_short & PAYLOAD_LEN) as u64,
-                    EXTENDED_PAYLOAD_SIZE => u16::from_be_bytes([
-                        read_buf[FIRST_SHORT_SIZE + 0],
-                        read_buf[FIRST_SHORT_SIZE + 1],
-                    ]) as u64,
-                    BIG_EXTENDED_PAYLOAD_SIZE => u64::from_be_bytes([
-                        read_buf[FIRST_SHORT_SIZE + 0],
-                        read_buf[FIRST_SHORT_SIZE + 1],
-                        read_buf[FIRST_SHORT_SIZE + 2],
-                        read_buf[FIRST_SHORT_SIZE + 3],
-                        read_buf[FIRST_SHORT_SIZE + 4],
-                        read_buf[FIRST_SHORT_SIZE + 5],
-                        read_buf[FIRST_SHORT_SIZE + 6],
-                        read_buf[FIRST_SHORT_SIZE + 7],
-                    ]),
-                    _ => unreachable!(),
-                };
-                mask_key = if first_short & MASK != 0 {
-                    Some(u32::from_be_bytes([
-                        read_buf[FIRST_SHORT_SIZE + payload_len_size + 0],
-                        read_buf[FIRST_SHORT_SIZE + payload_len_size + 1],
-                        read_buf[FIRST_SHORT_SIZE + payload_len_size + 2],
-                        read_buf[FIRST_SHORT_SIZE + payload_len_size + 3],
-                    ]))
-                } else {
-                    None
-                };
-                if payload_len > usize::MAX as u64 {
-                    todo!();
-                }
-                frame_size = header_size + payload_len as usize;
-                if read_buf.len() < frame_size {
-                    break 'to_read_more_bytes;
-                }
-
-                break 'cause_got_full_frame;
-            }
-
-            let mut buffer = Vec::with_capacity(4096);
-
-            let read = self.reader.read_buf(&mut buffer).await?;
-            self.data.extend(buffer.iter());
-            self.end_read += read;
-        }
-
-        let payload = self
-            .data
-            .splice(header_size..frame_size, [])
-            .collect::<Vec<_>>();
-
-        self.data.splice(0..header_size, []).for_each(|_| {});
-        self.end_read = self.data.len();
-
-        Ok(Frame {
-            first_short,
-            mask_key,
-            payload,
-        })
-    }
-}
-
-struct FrameWriter<Writer> {
-    data: Vec<u8>,
-    writer: Writer,
-}
-
-impl<Writer: AsyncWrite + Unpin> FrameWriter<Writer> {
-    async fn write(frame: Frame) -> Result<(), Error> {
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-struct Frame {
-    first_short: u16,
-    #[allow(unused)]
-    mask_key: Option<u32>,
-    payload: Vec<u8>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum Opcode {
-    Continuation,
-    Text,
-    Binary,
-    Close,
-    Ping,
-    Pong,
-    Reserved,
-}
-
-impl Frame {
-    async fn to_stream(
-        opcode: u8,
-        payload: &[u8],
-        mask: Option<u32>,
-        stream: &mut (impl AsyncWrite + Unpin),
-    ) -> Result<(), Error> {
-        let mut bytes = Vec::with_capacity(128);
-
-        let payload_len_byte = match payload.len() {
-            0..=125 => payload.len(),
-            126.. if payload.len() as u64 <= u32::MAX as u64 => 126,
-            126.. => 127,
-        } as u8;
-
-        bytes.push((FIN >> 8) as u8 | opcode);
-        bytes.push((if mask.is_some() { MASK as u8 } else { 0 }) | payload_len_byte);
-
-        match payload_len_byte {
-            0..=125 => {}
-            126 => bytes.extend((payload.len() as u16).to_be_bytes()),
-            127 => bytes.extend((payload.len() as u64).to_be_bytes()),
-            _ => unreachable!("Incorrect payload len byte"),
-        }
-
-        if let Some(mask) = mask {
-            bytes.extend(mask.to_be_bytes());
-            let mask_bytes = mask.to_be_bytes();
-            bytes.extend(payload.iter().enumerate().map(|(i, byte)| {
-                let j = i % 4;
-                byte ^ mask_bytes[j]
-            }));
-        } else {
-            bytes.extend(payload);
-        }
-
-        stream.write_all(&bytes).await?;
-
-        Ok(())
-    }
-
-    fn fin(&self) -> bool {
-        self.first_short & FIN != 0
-    }
-
-    fn payload(self) -> Vec<u8> {
-        self.payload
-    }
-
-    fn opcode(&self) -> Opcode {
-        match (self.first_short & OPCODE) >> 8 {
-            0 => Opcode::Continuation,
-            1 => Opcode::Text,
-            2 => Opcode::Binary,
-            8 => Opcode::Close,
-            9 => Opcode::Ping,
-            10 => Opcode::Pong,
-            _ => Opcode::Reserved,
-        }
-    }
-}
-

@@ -104,13 +104,8 @@ async fn main() -> Result<()> {
                 let (stream, peer_addr) = listener.accept().await.context("accept tcp")?;
                 println!("new client at {}", peer_addr);
 
-                let future = async move {
-                    handle(stream, false).await.context("handle")?;
-                    Result::<()>::Ok(())
-                };
-
                 tokio::spawn(async move {
-                    if let Err(err) = future.await {
+                    if let Err(err) = handle(stream, false).await.context("handle") {
                         println!("error: {:?}", err);
                     }
                 });

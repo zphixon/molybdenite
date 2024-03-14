@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use std::{fs::File, io::BufReader, net::ToSocketAddrs, path::PathBuf, sync::Arc};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncWriteExt, BufStream},
     net::TcpStream,
 };
 use tokio_rustls::{
@@ -115,9 +115,11 @@ async fn main() -> Result<()> {
 
         do_connect(args.request, tls_stream).await?;
     } else {
+            let buf_stream = BufStream::new(TcpStream::connect(addr).await.context("connect")?);
+
         do_connect(
             args.request,
-            TcpStream::connect(addr).await.context("connect")?,
+            buf_stream,
         )
         .await?;
     }

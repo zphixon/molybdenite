@@ -1,12 +1,29 @@
 use std::net::TcpListener;
+use std::path::PathBuf;
 use std::thread::spawn;
 use tungstenite::protocol::frame::coding::{Control, Data, OpCode};
 use tungstenite::protocol::frame::{Frame, FrameHeader};
 use tungstenite::{accept, Message};
 
+#[derive(argh::FromArgs)]
+#[argh(description = "server example")]
+struct Args {
+    #[argh(option, description = "address to bind to")]
+    bind: String,
+
+    #[argh(option, description = "cert private key")]
+    key: Option<PathBuf>,
+
+    #[argh(option, description = "certificate")]
+    cert: Option<PathBuf>,
+}
+
+
 /// A WebSocket echo server
 fn main() {
-    let server = TcpListener::bind("192.168.1.196:4443").unwrap();
+    let args: Args = argh::from_env();
+
+    let server = TcpListener::bind(&args.bind).unwrap();
     for stream in server.incoming() {
         spawn(move || {
             println!("got client");
