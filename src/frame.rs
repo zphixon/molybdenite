@@ -41,12 +41,42 @@ impl Opcode {
     }
 }
 
-fn mask_payload(payload: &mut [u8], mask_key: u32) {
+fn unmask_payload(payload: &mut [u8], mask_key: u32) {
     let mask_bytes = mask_key.to_be_bytes();
     for (i, byte) in payload.iter_mut().enumerate() {
         let j = i % 4;
         *byte ^= mask_bytes[j];
     }
+}
+
+async fn write_masked(
+    data: &[u8],
+    mask_key: u32,
+    writer: &mut (impl AsyncWrite + Unpin),
+) -> Result<(), Error> {
+    let mask_bytes = mask_key.to_be_bytes();
+    for (i, byte) in data.iter().enumerate() {
+        let j = i % 4;
+        writer.write_u8(*byte ^ mask_bytes[j]).await?;
+    }
+    Ok(())
+}
+
+fn first_short(opcode: Opcode, mask_key: Option<u32>, payload: &[u8]) -> u16 {
+    let mut first_short = FIN;
+    first_short |= (opcode as u16) << 8;
+
+    first_short |= match payload.len() {
+        0..=SMALL_PAYLOAD_USIZE => payload.len() as u16,
+        EXTENDED_PAYLOAD_USIZE.. if payload.len() <= u16::MAX as usize => EXTENDED_PAYLOAD,
+        _ => BIG_EXTENDED_PAYLOAD,
+    };
+
+    if mask_key.is_some() {
+        first_short |= MASK;
+    }
+
+    first_short
 }
 
 #[derive(Debug)]
@@ -56,31 +86,6 @@ pub struct Frame {
 }
 
 impl Frame {
-    pub fn from_opcode_payload(
-        opcode: Opcode,
-        mut payload: Vec<u8>,
-        mask_key: Option<u32>,
-    ) -> Self {
-        let mut first_short = FIN;
-        first_short |= (opcode as u16) << 8;
-
-        first_short |= match payload.len() {
-            0..=SMALL_PAYLOAD_USIZE => payload.len() as u16,
-            EXTENDED_PAYLOAD_USIZE.. if payload.len() <= u16::MAX as usize => EXTENDED_PAYLOAD,
-            _ => BIG_EXTENDED_PAYLOAD,
-        };
-
-        if let Some(mask_key) = mask_key {
-            first_short |= MASK;
-            mask_payload(&mut payload, mask_key);
-        }
-
-        Frame {
-            first_short,
-            payload,
-        }
-    }
-
     pub fn fin(&self) -> bool {
         self.first_short & FIN != 0
     }
@@ -159,33 +164,28 @@ where
         }
     }
 
-    pub async fn write_message(&mut self, message: Message) -> Result<(), Error> {
-        let (payload, opcode) = message.into_bytes_opcode();
-        let frame = Frame::from_opcode_payload(opcode, payload, self.mask_key);
-        self.write_frame(frame).await
-    }
+    pub async fn write_message(&mut self, message: &Message) -> Result<(), Error> {
+        let payload = message.payload();
+        self.stream
+            .write_u16(first_short(message.opcode(), self.mask_key, payload))
+            .await?;
 
-    pub async fn write_frame(&mut self, frame: Frame) -> Result<(), Error> {
-        self.stream.write_u16(frame.first_short).await?;
-
-        if frame.payload.len() <= SMALL_PAYLOAD_USIZE {
+        if payload.len() <= SMALL_PAYLOAD_USIZE {
             // :)
-        } else if SMALL_PAYLOAD_USIZE < frame.payload.len()
-            && frame.payload.len() <= u16::MAX as usize
-        {
-            self.stream.write_u16(frame.payload.len() as u16).await?;
+        } else if SMALL_PAYLOAD_USIZE < payload.len() && payload.len() <= u16::MAX as usize {
+            self.stream.write_u16(payload.len() as u16).await?;
         } else {
-            self.stream.write_u64(frame.payload.len() as u64).await?;
+            self.stream.write_u64(payload.len() as u64).await?;
         }
 
         if let Some(mask_key) = self.mask_key {
             self.stream.write_u32(mask_key).await?;
-        }
-
-        let payload = frame.payload();
-        let mut written = 0;
-        while written < payload.len() {
-            written += self.stream.write(&payload[written..]).await?;
+            write_masked(payload, mask_key, &mut self.stream).await?;
+        } else {
+            let mut written = 0;
+            while written < payload.len() {
+                written += self.stream.write(&payload[written..]).await?;
+            }
         }
 
         Ok(())
@@ -253,7 +253,7 @@ where
         let mut payload = whole_frame[header_size..frame_size].to_vec();
 
         if let Some(mask_key) = mask_key {
-            mask_payload(&mut payload, mask_key);
+            unmask_payload(&mut payload, mask_key);
         }
 
         Ok(Some(Frame {
@@ -269,10 +269,13 @@ where
             first_short |= MASK;
         }
 
-        self.write_frame(Frame {
-            first_short,
-            payload: vec![],
-        })
-        .await
+        // TODO close as message
+        self.stream.write_u16(first_short).await?;
+
+        if let Some(mask_key) = self.mask_key {
+            self.stream.write_u32(mask_key).await?;
+        }
+
+        Ok(())
     }
 }

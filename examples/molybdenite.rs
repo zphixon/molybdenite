@@ -58,7 +58,10 @@ async fn do_client(request: Url, stream: impl AsyncRead + AsyncWrite + Unpin) ->
 
     loop {
         match ws.read().await {
-            Ok(message) => println!("server sent: {:?}", message),
+            Ok(message) => {
+                println!("server sent: {:?}", message);
+                ws.write(&message).await?;
+            },
             Err(molybdenite::Error::Closed(_)) => break,
             Err(err) => anyhow::bail!(err),
         }
@@ -73,7 +76,7 @@ async fn do_server(stream: impl AsyncRead + AsyncWrite + Unpin, secure: bool) ->
     let (mut ws, request) = molybdenite::WebSocket::server_from_stream(secure, stream).await?;
     println!("request was {}", request);
 
-    ws.write(molybdenite::Message::Text("dumptydonkeydooby".into()))
+    ws.write(&molybdenite::Message::Text("dumptydonkeydooby".into()))
         .await?;
     ws.close().await?;
 

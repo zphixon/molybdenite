@@ -43,11 +43,11 @@ async fn run_test_client(case: u32, host: &str) -> Result<(), molybdenite::Error
         match ws.read().await {
             Ok(msg) => match msg {
                 molybdenite::Message::Text(_) | molybdenite::Message::Binary(_) => {
-                    ws.write(msg).await?;
+                    ws.write(&msg).await?;
                     ws.flush().await?;
                 }
                 molybdenite::Message::Ping(data) => {
-                    ws.write(molybdenite::Message::Pong(data)).await?;
+                    ws.write(&molybdenite::Message::Pong(data)).await?;
                     ws.flush().await?;
                 }
                 _ => {}
@@ -78,11 +78,11 @@ async fn run_test_server(bind: SocketAddr) -> Result<(), molybdenite::Error> {
                 match ws.read().await {
                     Ok(msg) => match msg {
                         molybdenite::Message::Text(_) | molybdenite::Message::Binary(_) => {
-                            ws.write(msg).await?;
+                            ws.write(&msg).await?;
                             ws.flush().await?;
                         }
                         molybdenite::Message::Ping(data) => {
-                            ws.write(molybdenite::Message::Pong(data)).await?;
+                            ws.write(&molybdenite::Message::Pong(data)).await?;
                             ws.flush().await?;
                         }
                         _ => {}

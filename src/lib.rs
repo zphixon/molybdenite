@@ -68,12 +68,21 @@ pub enum Message {
 }
 
 impl Message {
-    fn into_bytes_opcode(self) -> (Vec<u8>, Opcode) {
+    fn opcode(&self) -> Opcode {
         match self {
-            Message::Text(text) => (text.into_bytes(), Opcode::Text),
-            Message::Binary(data) => (data, Opcode::Binary),
-            Message::Ping(data) => (data, Opcode::Ping),
-            Message::Pong(data) => (data, Opcode::Pong),
+            Message::Text(_) => Opcode::Text,
+            Message::Binary(_) => Opcode::Binary,
+            Message::Ping(_) => Opcode::Ping,
+            Message::Pong(_) => Opcode::Pong,
+        }
+    }
+
+    fn payload(&self) -> &[u8] {
+        match self {
+            Message::Text(text) => text.as_bytes(),
+            Message::Binary(data) => data.as_slice(),
+            Message::Ping(data) => data.as_slice(),
+            Message::Pong(data) => data.as_slice(),
         }
     }
 }
@@ -278,7 +287,7 @@ where
         }
     }
 
-    pub async fn write(&mut self, message: Message) -> Result<(), Error> {
+    pub async fn write(&mut self, message: &Message) -> Result<(), Error> {
         self.stream.write_message(message).await
     }
 
