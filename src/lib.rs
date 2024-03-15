@@ -97,7 +97,7 @@ pub struct WebSocket<Stream> {
     stream: FrameStream<BufStream<Stream>>,
     secure: bool,
     role: Role,
-    pub state: State,
+    state: State,
 }
 
 async fn read_until_crlf_crlf(
@@ -135,8 +135,9 @@ where
 
     pub async fn server_from_stream(
         secure: bool,
-        mut stream: BufStream<Stream>,
+        stream: Stream,
     ) -> Result<Self, Error> {
+        let mut stream = BufStream::new(stream);
         let request_bytes = read_until_crlf_crlf(&mut stream).await?;
         let request_str = std::str::from_utf8(&request_bytes)?;
 
@@ -234,8 +235,10 @@ where
 
     pub async fn client_from_stream(
         url: Url,
-        mut stream: BufStream<Stream>,
+        stream: Stream,
     ) -> Result<Self, Error> {
+        let mut stream = BufStream::new(stream);
+
         let ("ws" | "wss") = url.scheme() else {
             return Err(Error::IncorrectScheme);
         };

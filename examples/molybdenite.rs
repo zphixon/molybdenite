@@ -7,7 +7,7 @@ use std::{
     sync::Arc,
 };
 use tokio::{
-    io::{AsyncRead, AsyncWrite, BufStream},
+    io::{AsyncRead, AsyncWrite},
     net::{TcpListener, TcpStream},
 };
 use tokio_rustls::{
@@ -55,7 +55,7 @@ struct Request {
 
 async fn do_client(request: Url, stream: impl AsyncRead + AsyncWrite + Unpin) -> Result<()> {
     let mut ws =
-        molybdenite::WebSocket::client_from_stream(request, BufStream::new(stream)).await?;
+        molybdenite::WebSocket::client_from_stream(request, stream).await?;
 
     loop {
         match ws.read().await {
@@ -71,7 +71,7 @@ async fn do_client(request: Url, stream: impl AsyncRead + AsyncWrite + Unpin) ->
 }
 
 async fn do_server(stream: impl AsyncRead + AsyncWrite + Unpin) -> Result<()> {
-    let mut ws = molybdenite::WebSocket::server_from_stream(false, BufStream::new(stream)).await?;
+    let mut ws = molybdenite::WebSocket::server_from_stream(false, stream).await?;
 
     ws.write(molybdenite::Message::Text("dumptydonkeydooby".into()))
         .await?;
