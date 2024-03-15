@@ -19,7 +19,10 @@ struct Args {
     cert: Option<PathBuf>,
 }
 
-async fn handle(stream: BufStream<impl AsyncReadExt + AsyncWriteExt + Unpin>, secure: bool) -> Result<()> {
+async fn handle(
+    stream: BufStream<impl AsyncReadExt + AsyncWriteExt + Unpin>,
+    secure: bool,
+) -> Result<()> {
     let mut ws = molybdenite::WebSocket::server_from_stream(secure, stream).await?;
 
     ws.write(molybdenite::Message::Text("dumptydonkeydooby".into()))

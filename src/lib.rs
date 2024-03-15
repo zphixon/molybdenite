@@ -127,7 +127,10 @@ where
         self.stream.flush().await
     }
 
-    pub async fn server_from_stream(secure: bool, mut stream: BufStream<Stream>) -> Result<Self, Error> {
+    pub async fn server_from_stream(
+        secure: bool,
+        mut stream: BufStream<Stream>,
+    ) -> Result<Self, Error> {
         let request_bytes = read_until_crlf_crlf(&mut stream).await?;
         let request_str = std::str::from_utf8(&request_bytes)?;
 
@@ -211,7 +214,10 @@ where
         })
     }
 
-    pub async fn client_from_stream(url: Url, mut stream: BufStream<Stream>) -> Result<Self, Error> {
+    pub async fn client_from_stream(
+        url: Url,
+        mut stream: BufStream<Stream>,
+    ) -> Result<Self, Error> {
         let ("ws" | "wss") = url.scheme() else {
             return Err(Error::IncorrectScheme);
         };
@@ -278,15 +284,26 @@ where
 
         let expect_sec_websocket_accept_base64 = BASE64.encode(expect_sec_websocket_accept_bytes);
 
-        if headers.get("connection") != Some(&"Upgrade") {
+        if headers
+            .get("connection")
+            .map(|connection| connection.eq_ignore_ascii_case("upgrade"))
+            != Some(true)
+        {
             return Err(Error::MissingOrInvalidHeader("Connection"));
         }
 
-        if headers.get("upgrade") != Some(&"websocket") {
+        if headers
+            .get("upgrade")
+            .map(|upgrade| upgrade.eq_ignore_ascii_case("websocket"))
+            != Some(true)
+        {
             return Err(Error::MissingOrInvalidHeader("Upgrade"));
         }
 
-        if headers.get("sec-websocket-accept") != Some(&expect_sec_websocket_accept_base64.as_str())
+        if headers
+            .get("sec-websocket-accept")
+            .map(|swa| swa.eq_ignore_ascii_case(expect_sec_websocket_accept_base64.as_str()))
+            != Some(true)
         {
             return Err(Error::MissingOrInvalidHeader("Sec-WebSocket-Accept"));
         }
