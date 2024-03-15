@@ -54,8 +54,7 @@ struct Request {
 }
 
 async fn do_client(request: Url, stream: impl AsyncRead + AsyncWrite + Unpin) -> Result<()> {
-    let mut ws =
-        molybdenite::WebSocket::client_from_stream(request, stream).await?;
+    let mut ws = molybdenite::WebSocket::client_from_stream(request, stream).await?;
 
     loop {
         match ws.read().await {
