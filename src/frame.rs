@@ -141,9 +141,13 @@ where
     pub async fn write_frame(&mut self, frame: Frame) -> Result<(), Error> {
         self.stream.write_u16(frame.first_short).await?;
 
-        if 126 <= frame.payload.len() && frame.payload.len() <= u16::MAX as usize {
+        if frame.payload.len() <= SMALL_PAYLOAD_USIZE {
+            // :)
+        } else if SMALL_PAYLOAD_USIZE < frame.payload.len()
+            && frame.payload.len() <= u16::MAX as usize
+        {
             self.stream.write_u16(frame.payload.len() as u16).await?;
-        } else if u32::MAX as u64 <= frame.payload.len() as u64 {
+        } else {
             self.stream.write_u64(frame.payload.len() as u64).await?;
         }
 
