@@ -68,9 +68,10 @@ async fn run_test_server(bind: SocketAddr) -> Result<(), molybdenite::Error> {
 
     loop {
         let (stream, _) = listener.accept().await?;
-        let mut ws = molybdenite::WebSocket::server_from_stream(false, BufStream::new(stream))
-            .await
-            .unwrap();
+        let (mut ws, _request) =
+            molybdenite::WebSocket::server_from_stream(false, BufStream::new(stream))
+                .await
+                .unwrap();
 
         tokio::spawn(async move {
             loop {

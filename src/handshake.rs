@@ -24,23 +24,29 @@ async fn read_until_crlf_crlf(
 
 pub async fn server(
     stream: &mut BufStream<impl AsyncRead + AsyncWrite + Unpin>,
-) -> Result<(), Error> {
+    secure: bool,
+) -> Result<Url, Error> {
     let request_bytes = read_until_crlf_crlf(stream).await?;
     let request_str = std::str::from_utf8(&request_bytes)?;
 
     let mut headers = HashMap::new();
-    for (i, line) in request_str.lines().enumerate() {
-        if i == 0 {
-            let mut split = line.split_ascii_whitespace();
-            // TODO: query
-            let (Some("GET"), Some(_), Some("HTTP/1.1")) =
-                (split.next(), split.next(), split.next())
-            else {
-                return Err(Error::UnexpectedRequest(line.into()));
-            };
-            continue;
-        }
 
+    let mut lines = request_str.lines().enumerate();
+    let Some((_, request_line)) = lines.next() else {
+        // TODO nicer error value
+        return Err(Error::UnexpectedRequest(String::from("(no request)")));
+    };
+
+    let mut split = request_line.split_ascii_whitespace();
+
+    let (Some("GET"), Some(got_request_path), Some("HTTP/1.1")) =
+        (split.next(), split.next(), split.next())
+    else {
+        return Err(Error::UnexpectedRequest(request_line.into()));
+    };
+    let request_path = String::from(got_request_path);
+
+    for (_, line) in lines {
         if line == "" {
             break;
         }
@@ -58,10 +64,17 @@ pub async fn server(
         headers.insert(header.to_lowercase(), value);
     }
 
-    // TODO: validate
-    let Some(_host) = headers.get("host") else {
+    let Some(host) = headers.get("host") else {
         return Err(Error::MissingOrInvalidHeader("Host"));
     };
+
+    let request_url: Url = format!(
+        "{}://{}{}",
+        if secure { "wss" } else { "ws" },
+        host,
+        request_path
+    )
+    .parse()?;
 
     if headers
         .get("connection")
@@ -112,7 +125,7 @@ pub async fn server(
     stream.write_all(response.as_bytes()).await?;
     stream.flush().await?;
 
-    Ok(())
+    Ok(request_url)
 }
 
 pub async fn client(

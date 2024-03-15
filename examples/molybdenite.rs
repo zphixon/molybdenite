@@ -69,8 +69,9 @@ async fn do_client(request: Url, stream: impl AsyncRead + AsyncWrite + Unpin) ->
     Ok(())
 }
 
-async fn do_server(stream: impl AsyncRead + AsyncWrite + Unpin) -> Result<()> {
-    let mut ws = molybdenite::WebSocket::server_from_stream(false, stream).await?;
+async fn do_server(stream: impl AsyncRead + AsyncWrite + Unpin, secure: bool) -> Result<()> {
+    let (mut ws, request) = molybdenite::WebSocket::server_from_stream(secure, stream).await?;
+    println!("request was {}", request);
 
     ws.write(molybdenite::Message::Text("dumptydonkeydooby".into()))
         .await?;
@@ -127,11 +128,11 @@ async fn main() -> Result<()> {
                 tokio::spawn(async move {
                     println!("new peer: {}", peer);
                     if let Some(acceptor) = acceptor {
-                        do_server(acceptor.accept(stream).await?).await?;
+                        do_server(acceptor.accept(stream).await?, true).await?;
                     } else {
-                        do_server(stream).await?;
+                        do_server(stream, false).await?;
                     }
-                    println!("closed");
+                    println!("closed: {}", peer);
                     Result::<()>::Ok(())
                 });
             }

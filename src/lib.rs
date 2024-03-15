@@ -43,6 +43,8 @@ pub enum Error {
     TooLargeControl,
     #[error("RSV bits were set")]
     RsvSet,
+    #[error("Invalid request from client")]
+    InvalidRequest(#[from] url::ParseError),
 }
 
 #[derive(Debug)]
@@ -83,7 +85,7 @@ pub enum Role {
 }
 
 #[derive(Debug)]
-pub enum State {
+enum State {
     Closed,
     Open,
     PartialRead {
@@ -111,20 +113,19 @@ where
         self.role
     }
 
-    pub async fn flush(&mut self) -> Result<(), Error> {
-        self.stream.flush().await
-    }
-
-    pub async fn server_from_stream(secure: bool, stream: Stream) -> Result<Self, Error> {
+    pub async fn server_from_stream(secure: bool, stream: Stream) -> Result<(Self, Url), Error> {
         let mut stream = BufStream::new(stream);
-        handshake::server(&mut stream).await?;
+        let request_url = handshake::server(&mut stream, secure).await?;
 
-        Ok(WebSocket {
-            stream: FrameStream::new(stream, None),
-            secure,
-            role: Role::Server,
-            state: State::Open,
-        })
+        Ok((
+            WebSocket {
+                stream: FrameStream::new(stream, None),
+                secure,
+                role: Role::Server,
+                state: State::Open,
+            },
+            request_url,
+        ))
     }
 
     pub async fn client_from_stream(url: Url, stream: Stream) -> Result<Self, Error> {
@@ -279,6 +280,10 @@ where
 
     pub async fn write(&mut self, message: Message) -> Result<(), Error> {
         self.stream.write_message(message).await
+    }
+
+    pub async fn flush(&mut self) -> Result<(), Error> {
+        self.stream.flush().await
     }
 
     pub async fn close(&mut self) -> Result<(), Error> {
