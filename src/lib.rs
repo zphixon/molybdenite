@@ -38,6 +38,12 @@ pub enum Error {
     InvalidUtf8Close(#[from] Utf8Error),
     #[error("Got an unexpected HTTP request from client: {0}")]
     UnexpectedRequest(String),
+    #[error("Got a fragmented control frame")]
+    FragmentedControl,
+    #[error("Got control frame larger than 127 bytes")]
+    TooLargeControl,
+    #[error("RSV bits were set")]
+    RsvSet,
 }
 
 #[derive(Debug)]

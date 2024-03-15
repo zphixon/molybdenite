@@ -4,9 +4,9 @@ use std::mem::size_of;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
 
 pub const FIN: u16 = 0b1000_0000_0000_0000;
-//pub const RSV1: u16 = 0b0100_0000_0000_0000;
-//pub const RSV2: u16 = 0b0010_0000_0000_0000;
-//pub const RSV3: u16 = 0b0001_0000_0000_0000;
+pub const RSV1: u16 = 0b0100_0000_0000_0000;
+pub const RSV2: u16 = 0b0010_0000_0000_0000;
+pub const RSV3: u16 = 0b0001_0000_0000_0000;
 pub const OPCODE: u16 = 0b0000_1111_0000_0000;
 pub const MASK: u16 = 0b0000_0000_1000_0000;
 pub const PAYLOAD_LEN: u16 = 0b0000_0000_0111_1111;
@@ -21,7 +21,7 @@ pub const BIG_EXTENDED_PAYLOAD_SIZE: usize = size_of::<u64>();
 pub const MASK_KEY_SIZE: usize = size_of::<u32>();
 
 #[repr(u8)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Opcode {
     Continuation = 0,
     Text = 1,
@@ -30,6 +30,15 @@ pub enum Opcode {
     Ping = 9,
     Pong = 10,
     Reserved,
+}
+
+impl Opcode {
+    fn is_control(&self) -> bool {
+        match self {
+            Opcode::Close | Opcode::Ping | Opcode::Pong => true,
+            _ => false,
+        }
+    }
 }
 
 fn mask_payload(payload: &mut [u8], mask_key: u32) {
@@ -91,6 +100,10 @@ impl Frame {
             _ => Opcode::Reserved,
         }
     }
+
+    pub fn rsv_set(&self) -> bool {
+        self.first_short & (RSV1 | RSV2 | RSV3) != 0
+    }
 }
 
 pub struct FrameStream<Stream> {
@@ -119,6 +132,20 @@ where
     pub async fn read_frame(&mut self) -> Result<Option<Frame>, Error> {
         loop {
             if let Some(frame) = self.parse_frame()? {
+                if frame.opcode().is_control() {
+                    if !frame.fin() {
+                        return Err(Error::FragmentedControl);
+                    }
+
+                    if frame.payload.len() > SMALL_PAYLOAD_USIZE {
+                        return Err(Error::TooLargeControl);
+                    }
+                }
+
+                if frame.rsv_set() {
+                    return Err(Error::RsvSet);
+                }
+
                 return Ok(Some(frame));
             }
 
