@@ -464,6 +464,7 @@ where
     }
 
     pub async fn close(&mut self) -> Result<(), Error> {
-        self.stream.write_close().await
+        self.stream.write_close().await?;
+        self.flush().await
     }
 }
