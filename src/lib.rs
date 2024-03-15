@@ -59,6 +59,34 @@ impl From<getrandom::Error> for Error {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum MessageRef<'data> {
+    Text(&'data str),
+    Binary(&'data [u8]),
+    Ping(&'data [u8]),
+    Pong(&'data [u8]),
+}
+
+impl MessageRef<'_> {
+    fn opcode(&self) -> Opcode {
+        match self {
+            MessageRef::Text(_) => Opcode::Text,
+            MessageRef::Binary(_) => Opcode::Binary,
+            MessageRef::Ping(_) => Opcode::Ping,
+            MessageRef::Pong(_) => Opcode::Pong,
+        }
+    }
+
+    fn payload(&self) -> &[u8] {
+        match self {
+            MessageRef::Text(text) => text.as_bytes(),
+            MessageRef::Binary(data) => data,
+            MessageRef::Ping(data) => data,
+            MessageRef::Pong(data) => data,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum Message {
     Text(String),
@@ -68,22 +96,29 @@ pub enum Message {
 }
 
 impl Message {
-    fn opcode(&self) -> Opcode {
+    fn as_ref(&self) -> MessageRef {
         match self {
-            Message::Text(_) => Opcode::Text,
-            Message::Binary(_) => Opcode::Binary,
-            Message::Ping(_) => Opcode::Ping,
-            Message::Pong(_) => Opcode::Pong,
+            Message::Text(text) => MessageRef::Text(text.as_str()),
+            Message::Binary(data) => MessageRef::Binary(data.as_slice()),
+            Message::Ping(data) => MessageRef::Ping(data.as_slice()),
+            Message::Pong(data) => MessageRef::Pong(data.as_slice()),
         }
     }
+}
 
-    fn payload(&self) -> &[u8] {
-        match self {
-            Message::Text(text) => text.as_bytes(),
-            Message::Binary(data) => data.as_slice(),
-            Message::Ping(data) => data.as_slice(),
-            Message::Pong(data) => data.as_slice(),
-        }
+pub trait AsMessageRef<'data> {
+    fn as_message_ref(self) -> MessageRef<'data>;
+}
+
+impl<'data> AsMessageRef<'data> for &'data Message {
+    fn as_message_ref(self) -> MessageRef<'data> {
+        self.as_ref()
+    }
+}
+
+impl<'data> AsMessageRef<'data> for MessageRef<'data> {
+    fn as_message_ref(self) -> MessageRef<'data> {
+        self
     }
 }
 
@@ -287,7 +322,8 @@ where
         }
     }
 
-    pub async fn write(&mut self, message: &Message) -> Result<(), Error> {
+    pub async fn write<'data>(&mut self, message: impl AsMessageRef<'data>) -> Result<(), Error> {
+        let message = message.as_message_ref();
         self.stream.write_message(message).await
     }
 

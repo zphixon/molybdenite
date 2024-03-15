@@ -1,4 +1,4 @@
-use crate::{Error, Message};
+use crate::{Error, MessageRef};
 use bytes::BytesMut;
 use std::mem::size_of;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
@@ -164,7 +164,7 @@ where
         }
     }
 
-    pub async fn write_message(&mut self, message: &Message) -> Result<(), Error> {
+    pub async fn write_message(&mut self, message: MessageRef<'_>) -> Result<(), Error> {
         let payload = message.payload();
         self.stream
             .write_u16(first_short(message.opcode(), self.mask_key, payload))
