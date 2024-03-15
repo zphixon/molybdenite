@@ -175,15 +175,27 @@ where
             return Err(Error::MissingOrInvalidHeader("Host"));
         };
 
-        if headers.get("connection") != Some(&"Upgrade") {
+        if headers
+            .get("connection")
+            .map(|connection| connection.eq_ignore_ascii_case("upgrade"))
+            != Some(true)
+        {
             return Err(Error::MissingOrInvalidHeader("Connection"));
         }
 
-        if headers.get("upgrade") != Some(&"websocket") {
+        if headers
+            .get("upgrade")
+            .map(|upgrade| upgrade.eq_ignore_ascii_case("websocket"))
+            != Some(true)
+        {
             return Err(Error::MissingOrInvalidHeader("Upgrade"));
         }
 
-        if headers.get("sec-websocket-version") != Some(&"13") {
+        if headers
+            .get("sec-websocket-version")
+            .map(|swv| swv.eq_ignore_ascii_case("13"))
+            != Some(true)
+        {
             return Err(Error::MissingOrInvalidHeader("Sec-WebSocket-Version"));
         }
 
