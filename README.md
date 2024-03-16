@@ -6,6 +6,7 @@ Async WebSocket library (WIP!)
 
 - Compression
 - Auto-fragmentation of large sent messages
+- Unit tests
 
 ## Autobahn
 
