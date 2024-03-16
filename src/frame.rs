@@ -158,7 +158,7 @@ where
                 if self.buffer.is_empty() {
                     return Ok(None);
                 } else {
-                    return Err(Error::Closed(None));
+                    return Err(Error::unexpected_close());
                 }
             }
         }
@@ -269,7 +269,6 @@ where
             first_short |= MASK;
         }
 
-        // TODO close as message
         self.stream.write_u16(first_short).await?;
 
         if let Some(mask_key) = self.mask_key {

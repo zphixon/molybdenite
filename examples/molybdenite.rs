@@ -54,15 +54,18 @@ struct Request {
 }
 
 async fn do_client(request: Url, stream: impl AsyncRead + AsyncWrite + Unpin) -> Result<()> {
-    let mut ws = molybdenite::WebSocket::client_from_stream(request, stream).await?;
+    let mut ws = molybdenite::WebSocket::connect(&request, stream).await?;
 
     loop {
         match ws.read().await {
+            Ok(molybdenite::Message::Close(_)) => {
+                println!("server initiated close");
+                break;
+            }
             Ok(message) => {
                 println!("server sent: {:?}", message);
                 ws.write(&message).await?;
-            },
-            Err(molybdenite::Error::Closed(_)) => break,
+            }
             Err(err) => anyhow::bail!(err),
         }
     }
@@ -73,7 +76,7 @@ async fn do_client(request: Url, stream: impl AsyncRead + AsyncWrite + Unpin) ->
 }
 
 async fn do_server(stream: impl AsyncRead + AsyncWrite + Unpin, secure: bool) -> Result<()> {
-    let (mut ws, request) = molybdenite::WebSocket::server_from_stream(secure, stream).await?;
+    let (mut ws, request) = molybdenite::WebSocket::accept(secure, stream).await?;
     println!("request was {}", request);
 
     ws.write(molybdenite::MessageRef::Text("dumptydonkeydooby"))
@@ -82,8 +85,11 @@ async fn do_server(stream: impl AsyncRead + AsyncWrite + Unpin, secure: bool) ->
 
     loop {
         match ws.read().await {
+            Ok(molybdenite::Message::Close(_)) => {
+                println!("client finished close");
+                break;
+            }
             Ok(message) => println!("client sent: {:?}", message),
-            Err(molybdenite::Error::Closed(_)) => break,
             Err(err) => anyhow::bail!(err),
         }
     }

@@ -129,7 +129,7 @@ pub async fn server(
 }
 
 pub async fn client(
-    url: Url,
+    url: &Url,
     stream: &mut BufStream<impl AsyncRead + AsyncWrite + Unpin>,
 ) -> Result<(), Error> {
     let ("ws" | "wss") = url.scheme() else {

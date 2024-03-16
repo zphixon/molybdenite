@@ -10,7 +10,7 @@ use url::Url;
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("I/O: {0}")]
-    TokioIo(#[from] tokio::io::Error),
+    Io(#[from] tokio::io::Error),
     #[error("Could not get random data")]
     GetRandom(getrandom::Error),
     #[error("URL does not have a host")]
@@ -29,8 +29,6 @@ pub enum Error {
     InvalidOpcode(Opcode),
     #[error("Tried to send/receive a message on a closed websocket")]
     WasClosed,
-    #[error("The websocket has been closed")]
-    Closed(Option<Close>),
     #[error("Invalid UTF-8")]
     InvalidUtf8(#[from] FromUtf8Error),
     #[error("Invalid UTF-8 in Close frame")]
@@ -47,10 +45,28 @@ pub enum Error {
     InvalidRequest(#[from] url::ParseError),
 }
 
+impl Error {
+    fn unexpected_close() -> Error {
+        Error::Io(tokio::io::Error::new(
+            tokio::io::ErrorKind::UnexpectedEof,
+            "WebSocket unexpectedly closed",
+        ))
+    }
+}
+
 #[derive(Debug)]
 pub struct Close {
-    pub status: u16,
-    pub reason: String,
+    bytes: Vec<u8>,
+}
+
+impl Close {
+    pub fn status(&self) -> u16 {
+        todo!()
+    }
+
+    pub fn reason(&self) -> Result<&str, Error> {
+        todo!()
+    }
 }
 
 impl From<getrandom::Error> for Error {
@@ -65,6 +81,7 @@ pub enum MessageRef<'data> {
     Binary(&'data [u8]),
     Ping(&'data [u8]),
     Pong(&'data [u8]),
+    Close(Option<&'data Close>),
 }
 
 impl MessageRef<'_> {
@@ -74,6 +91,7 @@ impl MessageRef<'_> {
             MessageRef::Binary(_) => Opcode::Binary,
             MessageRef::Ping(_) => Opcode::Ping,
             MessageRef::Pong(_) => Opcode::Pong,
+            MessageRef::Close(_) => Opcode::Close,
         }
     }
 
@@ -83,6 +101,7 @@ impl MessageRef<'_> {
             MessageRef::Binary(data) => data,
             MessageRef::Ping(data) => data,
             MessageRef::Pong(data) => data,
+            MessageRef::Close(close) => close.map(|close| close.bytes.as_slice()).unwrap_or(&[]),
         }
     }
 }
@@ -93,6 +112,7 @@ pub enum Message {
     Binary(Vec<u8>),
     Ping(Vec<u8>),
     Pong(Vec<u8>),
+    Close(Option<Close>),
 }
 
 impl Message {
@@ -102,6 +122,7 @@ impl Message {
             Message::Binary(data) => MessageRef::Binary(data.as_slice()),
             Message::Ping(data) => MessageRef::Ping(data.as_slice()),
             Message::Pong(data) => MessageRef::Pong(data.as_slice()),
+            Message::Close(close) => MessageRef::Close(close.as_ref()),
         }
     }
 }
@@ -157,25 +178,35 @@ where
         self.role
     }
 
-    pub async fn server_from_stream(secure: bool, stream: Stream) -> Result<(Self, Url), Error> {
+    pub async fn accept(secure: bool, stream: Stream) -> Result<(Self, Url), Error> {
         let mut stream = BufStream::new(stream);
         let request_url = handshake::server(&mut stream, secure).await?;
-
         Ok((
-            WebSocket {
-                stream: FrameStream::new(stream, None),
-                secure,
-                role: Role::Server,
-                state: State::Open,
-            },
+            Self::accept_no_handshake(secure, stream).await?,
             request_url,
         ))
     }
 
-    pub async fn client_from_stream(url: Url, stream: Stream) -> Result<Self, Error> {
+    pub async fn accept_no_handshake(
+        secure: bool,
+        stream: BufStream<Stream>,
+    ) -> Result<Self, Error> {
+        Ok(WebSocket {
+            stream: FrameStream::new(stream, None),
+            secure,
+            role: Role::Server,
+            state: State::Open,
+        })
+    }
+
+    pub async fn connect(url: &Url, stream: Stream) -> Result<Self, Error> {
         let mut stream = BufStream::new(stream);
-        let secure = url.scheme() == "wss";
         handshake::client(url, &mut stream).await?;
+        Self::connect_no_handshake(url, stream).await
+    }
+
+    pub async fn connect_no_handshake(url: &Url, stream: BufStream<Stream>) -> Result<Self, Error> {
+        let secure = url.scheme() == "wss";
 
         let mut mask_bytes = [0u8; 4];
         getrandom::getrandom(&mut mask_bytes)?;
@@ -194,26 +225,17 @@ where
             Some(frame) => Ok(frame),
             None => {
                 self.state = State::Closed;
-                Err(Error::Closed(None))
+                Err(Error::unexpected_close())
             }
         }
     }
 
     pub async fn read(&mut self) -> Result<Message, Error> {
-        fn got_close(frame: Frame) -> Error {
+        fn close(frame: Frame) -> Message {
             let payload = frame.payload();
             match payload[..] {
-                [] | [_] => Error::Closed(None),
-                [status_high, status_low, ref reason @ ..] => {
-                    let status = u16::from_be_bytes([status_high, status_low]);
-                    match std::str::from_utf8(reason) {
-                        Ok(reason) => Error::Closed(Some(Close {
-                            status,
-                            reason: reason.into(),
-                        })),
-                        Err(err) => Error::InvalidUtf8Close(err),
-                    }
-                }
+                [] | [_] => Message::Close(None),
+                [..] => Message::Close(Some(Close { bytes: payload })),
             }
         }
 
@@ -227,7 +249,7 @@ where
                     Opcode::Text | Opcode::Binary => {}
                     Opcode::Ping => return Ok(Message::Ping(frame.payload())),
                     Opcode::Pong => return Ok(Message::Pong(frame.payload())),
-                    Opcode::Close => return Err(got_close(frame)),
+                    Opcode::Close => return Ok(close(frame)),
                     op => return Err(Error::InvalidOpcode(op)),
                 }
 
@@ -244,7 +266,7 @@ where
                             read_payload.extend(frame.payload());
                         }
 
-                        Opcode::Close => return Err(got_close(frame)),
+                        Opcode::Close => return Ok(close(frame)),
                         Opcode::Ping => {
                             self.state = State::PartialRead {
                                 first_opcode,
@@ -286,7 +308,7 @@ where
                         }
                         Opcode::Ping => Ok(Some(Message::Ping(frame.payload()))),
                         Opcode::Pong => Ok(Some(Message::Pong(frame.payload()))),
-                        Opcode::Close => Err(got_close(frame)),
+                        Opcode::Close => Ok(Some(close(frame))),
 
                         op => Err(Error::InvalidOpcode(op)),
                     }
