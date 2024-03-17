@@ -8,49 +8,17 @@ use url::Url;
 const SWITCHING_PROTOCOLS: &str = "HTTP/1.1 101 Switching Protocols";
 const SEC_WEBSOCKET_ACCEPT_UUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
-async fn read_until_crlf_crlf(
+async fn read_headers(
     stream: &mut BufStream<impl AsyncRead + AsyncWrite + Unpin>,
-) -> Result<Vec<u8>, Error> {
-    const CRLF_CRLF: &[u8] = b"\r\n\r\n";
-
-    let mut response = Vec::new();
-
-    while !response.ends_with(CRLF_CRLF) {
-        stream.read_until(b'\n', &mut response).await?;
-    }
-
-    Ok(response)
-}
-
-pub async fn server(
-    stream: &mut BufStream<impl AsyncRead + AsyncWrite + Unpin>,
-    secure: bool,
-) -> Result<Url, Error> {
-    let request_bytes = read_until_crlf_crlf(stream).await?;
-    let request_str = std::str::from_utf8(&request_bytes)?;
-
+) -> Result<HashMap<String, String>, Error> {
     let mut headers = HashMap::new();
-
-    let mut lines = request_str.lines().enumerate();
-    let Some((_, request_line)) = lines.next() else {
-        // TODO nicer error value
-        return Err(Error::InvalidRequest(String::from("(no request)")));
-    };
-
-    let mut split = request_line.split_ascii_whitespace();
-
-    let (Some("GET"), Some(got_request_path), Some("HTTP/1.1")) =
-        (split.next(), split.next(), split.next())
-    else {
-        return Err(Error::InvalidRequest(request_line.into()));
-    };
-    let request_path = String::from(got_request_path);
-
-    for (_, line) in lines {
+    let mut line_bytes = Vec::new();
+    loop {
+        stream.read_until(b'\n', &mut line_bytes).await?;
+        let line = std::str::from_utf8(&line_bytes)?.trim();
         if line.is_empty() {
             break;
         }
-
         let mut split = line.split(": ");
 
         let Some(header) = split.next() else {
@@ -61,8 +29,29 @@ pub async fn server(
             return Err(Error::InvalidHeaderLine(line.into()));
         };
 
-        headers.insert(header.to_lowercase(), value);
+        headers.insert(header.to_lowercase(), String::from(value));
+        line_bytes.clear();
     }
+
+    Ok(headers)
+}
+
+pub async fn server(
+    stream: &mut BufStream<impl AsyncRead + AsyncWrite + Unpin>,
+    secure: bool,
+) -> Result<Url, Error> {
+    let mut request_line_bytes = Vec::new();
+    stream.read_until(b'\n', &mut request_line_bytes).await?;
+    let request_line = std::str::from_utf8(&request_line_bytes)?.trim();
+    let mut split = request_line.split_ascii_whitespace();
+    let (Some("GET"), Some(got_request_path), Some("HTTP/1.1")) =
+        (split.next(), split.next(), split.next())
+    else {
+        return Err(Error::InvalidRequest(request_line.into()));
+    };
+    let request_path = String::from(got_request_path);
+
+    let headers = read_headers(stream).await?;
 
     let Some(host) = headers.get("host") else {
         return Err(Error::MissingOrInvalidHeader("Host"));
@@ -166,31 +155,14 @@ pub async fn client(
     stream.write_all(request.as_bytes()).await?;
     stream.flush().await?;
 
-    let response = read_until_crlf_crlf(stream).await?;
-    let response_str = std::str::from_utf8(&response)?;
-
-    let mut headers = HashMap::new();
-    for (i, line) in response_str.lines().enumerate() {
-        if i == 0 {
-            if line != SWITCHING_PROTOCOLS {
-                return Err(Error::UnexpectedStatus(line.into()));
-            } else {
-                continue;
-            }
-        }
-
-        if line.is_empty() {
-            break;
-        }
-
-        let mut split = line.split(": ");
-
-        let (Some(header), Some(value)) = (split.next(), split.next()) else {
-            return Err(Error::InvalidHeaderLine(line.into()));
-        };
-
-        headers.insert(header.to_lowercase(), value);
+    let mut response_line_bytes = Vec::new();
+    stream.read_until(b'\n', &mut response_line_bytes).await?;
+    let response_line = std::str::from_utf8(&response_line_bytes)?.trim();
+    if response_line != SWITCHING_PROTOCOLS {
+        return Err(Error::UnexpectedStatus(response_line.into()));
     }
+
+    let headers = read_headers(stream).await?;
 
     let expect_sec_websocket_accept_bytes =
         Sha1::from(format!("{}{}", key_base64, SEC_WEBSOCKET_ACCEPT_UUID))

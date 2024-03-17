@@ -15,9 +15,9 @@ pub enum Error {
     #[error("Could not get random data")]
     GetRandom(getrandom::Error),
     #[error("Invalid UTF-8")]
-    InvalidUtf8(#[from] FromUtf8Error),
+    InvalidUtf8String(#[from] FromUtf8Error),
     #[error("Invalid UTF-8 in Close frame")]
-    InvalidUtf8Close(#[from] Utf8Error),
+    InvalidUtf8Str(#[from] Utf8Error),
 
     #[error("URL does not have a host")]
     NoHost,
@@ -345,7 +345,7 @@ where
                 match first_opcode {
                     Opcode::Text => Ok(Message::Text(String::from_utf8(read_payload)?)),
                     Opcode::Binary => Ok(Message::Binary(read_payload)),
-                    _ => Err(Error::Bug("not text or binary in partial read") ),
+                    _ => Err(Error::Bug("not text or binary in partial read")),
                 }
             }
         }
