@@ -128,17 +128,17 @@ impl Message {
 }
 
 pub trait AsMessageRef<'data> {
-    fn as_message_ref(self) -> MessageRef<'data>;
+    fn into_message_ref(self) -> MessageRef<'data>;
 }
 
 impl<'data> AsMessageRef<'data> for &'data Message {
-    fn as_message_ref(self) -> MessageRef<'data> {
+    fn into_message_ref(self) -> MessageRef<'data> {
         self.as_ref()
     }
 }
 
 impl<'data> AsMessageRef<'data> for MessageRef<'data> {
-    fn as_message_ref(self) -> MessageRef<'data> {
+    fn into_message_ref(self) -> MessageRef<'data> {
         self
     }
 }
@@ -240,7 +240,7 @@ where
         }
 
         match self.state {
-            State::Closed => return Err(Error::WasClosed),
+            State::Closed => Err(Error::WasClosed),
 
             State::Open => {
                 let frame = self.next_frame().await?;
@@ -345,7 +345,7 @@ where
     }
 
     pub async fn write<'data>(&mut self, message: impl AsMessageRef<'data>) -> Result<(), Error> {
-        let message = message.as_message_ref();
+        let message = message.into_message_ref();
         self.stream.write_message(message).await
     }
 

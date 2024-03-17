@@ -34,10 +34,7 @@ pub enum Opcode {
 
 impl Opcode {
     fn is_control(&self) -> bool {
-        match self {
-            Opcode::Close | Opcode::Ping | Opcode::Pong => true,
-            _ => false,
-        }
+        matches!(self, Opcode::Close | Opcode::Ping | Opcode::Pong)
     }
 }
 
@@ -216,11 +213,11 @@ where
         let payload_len = match payload_len_size {
             0 => (first_short & PAYLOAD_LEN) as u64,
             EXTENDED_PAYLOAD_SIZE => u16::from_be_bytes([
-                self.buffer[FIRST_SHORT_SIZE + 0],
+                self.buffer[FIRST_SHORT_SIZE],
                 self.buffer[FIRST_SHORT_SIZE + 1],
             ]) as u64,
             BIG_EXTENDED_PAYLOAD_SIZE => u64::from_be_bytes([
-                self.buffer[FIRST_SHORT_SIZE + 0],
+                self.buffer[FIRST_SHORT_SIZE],
                 self.buffer[FIRST_SHORT_SIZE + 1],
                 self.buffer[FIRST_SHORT_SIZE + 2],
                 self.buffer[FIRST_SHORT_SIZE + 3],
@@ -233,7 +230,7 @@ where
         };
         let mask_key = if first_short & MASK != 0 {
             Some(u32::from_be_bytes([
-                self.buffer[FIRST_SHORT_SIZE + payload_len_size + 0],
+                self.buffer[FIRST_SHORT_SIZE + payload_len_size],
                 self.buffer[FIRST_SHORT_SIZE + payload_len_size + 1],
                 self.buffer[FIRST_SHORT_SIZE + payload_len_size + 2],
                 self.buffer[FIRST_SHORT_SIZE + payload_len_size + 3],

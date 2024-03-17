@@ -47,7 +47,7 @@ pub async fn server(
     let request_path = String::from(got_request_path);
 
     for (_, line) in lines {
-        if line == "" {
+        if line.is_empty() {
             break;
         }
 
@@ -138,7 +138,7 @@ pub async fn client(
 
     let secure = url.scheme() == "wss";
     let host = url.host_str().ok_or_else(|| Error::NoHost)?;
-    let port = url.port().unwrap_or_else(|| if secure { 443 } else { 80 });
+    let port = url.port().unwrap_or(if secure { 443 } else { 80 });
 
     let resource_name = match url.query() {
         Some(query) => format!("{}?{}", url.path(), query),
@@ -178,7 +178,7 @@ pub async fn client(
             }
         }
 
-        if line == "" {
+        if line.is_empty() {
             break;
         }
 
