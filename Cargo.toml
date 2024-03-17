@@ -22,3 +22,7 @@ rustls-pemfile = "2.1.1"
 anyhow = "1.0.80"
 argh = "0.1.12"
 tungstenite = "0.21.0"
+
+[features]
+default = []
+molybdenite-fuzz = []

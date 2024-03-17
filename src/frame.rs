@@ -141,7 +141,7 @@ where
 
     pub async fn read_frame(&mut self) -> Result<Option<Frame>, Error> {
         loop {
-            if let Some(frame) = self.parse_frame()? {
+            if let Some(frame) = parse_frame(&mut self.buffer)? {
                 return Ok(Some(frame));
             }
 
@@ -182,92 +182,6 @@ where
         Ok(())
     }
 
-    pub fn parse_frame(&mut self) -> Result<Option<Frame>, Error> {
-        if self.buffer.len() < FIRST_SHORT_SIZE {
-            return Ok(None);
-        }
-
-        let first_short = u16::from_be_bytes([self.buffer[0], self.buffer[1]]);
-        let payload_len_size = match first_short & PAYLOAD_LEN {
-            0..=SMALL_PAYLOAD => 0,
-            EXTENDED_PAYLOAD => EXTENDED_PAYLOAD_SIZE,
-            BIG_EXTENDED_PAYLOAD => BIG_EXTENDED_PAYLOAD_SIZE,
-            _ => return Err(Error::Bug("unexpected payload len")),
-        };
-        let mask_key_size = if first_short & MASK != 0 {
-            MASK_KEY_SIZE
-        } else {
-            0
-        };
-        let header_size = FIRST_SHORT_SIZE + payload_len_size + mask_key_size;
-        let opcode = short_to_opcode(first_short);
-        if Opcode::Reserved == opcode {
-            return Err(Error::InvalidOpcode(Opcode::Reserved));
-        }
-        if opcode.is_control() {
-            if first_short & FIN == 0 {
-                return Err(Error::FragmentedControl);
-            }
-            if payload_len_size != 0 {
-                return Err(Error::TooLargeControl);
-            }
-        }
-        if rsv_set(first_short) {
-            return Err(Error::RsvSet);
-        }
-        if self.buffer.len() < header_size {
-            return Ok(None);
-        }
-
-        let payload_len = match payload_len_size {
-            0 => (first_short & PAYLOAD_LEN) as u64,
-            EXTENDED_PAYLOAD_SIZE => u16::from_be_bytes([
-                self.buffer[FIRST_SHORT_SIZE],
-                self.buffer[FIRST_SHORT_SIZE + 1],
-            ]) as u64,
-            BIG_EXTENDED_PAYLOAD_SIZE => u64::from_be_bytes([
-                self.buffer[FIRST_SHORT_SIZE],
-                self.buffer[FIRST_SHORT_SIZE + 1],
-                self.buffer[FIRST_SHORT_SIZE + 2],
-                self.buffer[FIRST_SHORT_SIZE + 3],
-                self.buffer[FIRST_SHORT_SIZE + 4],
-                self.buffer[FIRST_SHORT_SIZE + 5],
-                self.buffer[FIRST_SHORT_SIZE + 6],
-                self.buffer[FIRST_SHORT_SIZE + 7],
-            ]),
-            _ => return Err(Error::Bug("unexpected payload len size")),
-        };
-        let mask_key = if first_short & MASK != 0 {
-            Some(u32::from_be_bytes([
-                self.buffer[FIRST_SHORT_SIZE + payload_len_size],
-                self.buffer[FIRST_SHORT_SIZE + payload_len_size + 1],
-                self.buffer[FIRST_SHORT_SIZE + payload_len_size + 2],
-                self.buffer[FIRST_SHORT_SIZE + payload_len_size + 3],
-            ]))
-        } else {
-            None
-        };
-        if payload_len > usize::MAX as u64 {
-            return Err(Error::PayloadTooLong);
-        }
-        let frame_size = header_size + payload_len as usize;
-        if self.buffer.len() < frame_size {
-            return Ok(None);
-        }
-
-        let whole_frame = self.buffer.split_to(frame_size);
-        let mut payload = whole_frame[header_size..frame_size].to_vec();
-
-        if let Some(mask_key) = mask_key {
-            unmask_payload(&mut payload, mask_key);
-        }
-
-        Ok(Some(Frame {
-            first_short,
-            payload,
-        }))
-    }
-
     pub async fn write_close(&mut self) -> Result<(), Error> {
         let mut first_short = 0b1000_1000_0000_0000;
 
@@ -283,4 +197,89 @@ where
 
         Ok(())
     }
+}
+
+pub fn parse_frame(buffer: &mut BytesMut) -> Result<Option<Frame>, Error> {
+    if buffer.len() < FIRST_SHORT_SIZE {
+        return Ok(None);
+    }
+
+    let first_short = u16::from_be_bytes([buffer[0], buffer[1]]);
+    let payload_len_size = match first_short & PAYLOAD_LEN {
+        0..=SMALL_PAYLOAD => 0,
+        EXTENDED_PAYLOAD => EXTENDED_PAYLOAD_SIZE,
+        BIG_EXTENDED_PAYLOAD => BIG_EXTENDED_PAYLOAD_SIZE,
+        _ => return Err(Error::Bug("unexpected payload len")),
+    };
+    let mask_key_size = if first_short & MASK != 0 {
+        MASK_KEY_SIZE
+    } else {
+        0
+    };
+    let header_size = FIRST_SHORT_SIZE + payload_len_size + mask_key_size;
+    let opcode = short_to_opcode(first_short);
+    if Opcode::Reserved == opcode {
+        return Err(Error::InvalidOpcode(Opcode::Reserved));
+    }
+    if opcode.is_control() {
+        if first_short & FIN == 0 {
+            return Err(Error::FragmentedControl);
+        }
+        if payload_len_size != 0 {
+            return Err(Error::TooLargeControl);
+        }
+    }
+    if rsv_set(first_short) {
+        return Err(Error::RsvSet);
+    }
+    if buffer.len() < header_size {
+        return Ok(None);
+    }
+
+    let payload_len = match payload_len_size {
+        0 => (first_short & PAYLOAD_LEN) as u64,
+        EXTENDED_PAYLOAD_SIZE => {
+            u16::from_be_bytes([buffer[FIRST_SHORT_SIZE], buffer[FIRST_SHORT_SIZE + 1]]) as u64
+        }
+        BIG_EXTENDED_PAYLOAD_SIZE => u64::from_be_bytes([
+            buffer[FIRST_SHORT_SIZE],
+            buffer[FIRST_SHORT_SIZE + 1],
+            buffer[FIRST_SHORT_SIZE + 2],
+            buffer[FIRST_SHORT_SIZE + 3],
+            buffer[FIRST_SHORT_SIZE + 4],
+            buffer[FIRST_SHORT_SIZE + 5],
+            buffer[FIRST_SHORT_SIZE + 6],
+            buffer[FIRST_SHORT_SIZE + 7],
+        ]),
+        _ => return Err(Error::Bug("unexpected payload len size")),
+    };
+    let mask_key = if first_short & MASK != 0 {
+        Some(u32::from_be_bytes([
+            buffer[FIRST_SHORT_SIZE + payload_len_size],
+            buffer[FIRST_SHORT_SIZE + payload_len_size + 1],
+            buffer[FIRST_SHORT_SIZE + payload_len_size + 2],
+            buffer[FIRST_SHORT_SIZE + payload_len_size + 3],
+        ]))
+    } else {
+        None
+    };
+    if payload_len > usize::MAX as u64 {
+        return Err(Error::PayloadTooLong);
+    }
+    let frame_size = header_size + payload_len as usize;
+    if buffer.len() < frame_size {
+        return Ok(None);
+    }
+
+    let whole_frame = buffer.split_to(frame_size);
+    let mut payload = whole_frame[header_size..frame_size].to_vec();
+
+    if let Some(mask_key) = mask_key {
+        unmask_payload(&mut payload, mask_key);
+    }
+
+    Ok(Some(Frame {
+        first_short,
+        payload,
+    }))
 }

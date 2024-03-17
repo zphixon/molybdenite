@@ -1,0 +1,24 @@
+[package]
+name = "molybdenite-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+tokio = { version = "*", features = ["full"] }
+bytes = "1.5.0"
+
+[dependencies.molybdenite]
+path = ".."
+features = ["molybdenite-fuzz"]
+
+[[bin]]
+name = "fuzz_target_1"
+path = "fuzz_targets/fuzz_target_1.rs"
+test = false
+doc = false
+bench = false

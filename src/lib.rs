@@ -1,4 +1,11 @@
+#[cfg(feature = "molybdenite-fuzz")]
+pub mod frame;
+#[cfg(feature = "molybdenite-fuzz")]
+pub mod handshake;
+
+#[cfg(not(feature = "molybdenite-fuzz"))]
 mod frame;
+#[cfg(not(feature = "molybdenite-fuzz"))]
 mod handshake;
 
 use frame::{Frame, FrameStream, Opcode};
