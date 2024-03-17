@@ -42,7 +42,7 @@ pub enum Error {
     #[error("Invalid payload length")]
     InvalidPayloadLen,
     #[error("Payload too long")]
-    PayloadTooLong,
+    MessageTooLong,
     #[error("The opcode was not expected at this time: {0:?}")]
     InvalidOpcode(Opcode),
     #[error("Tried to send/receive a message on a closed websocket")]

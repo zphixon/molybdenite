@@ -264,9 +264,11 @@ pub fn parse_frame(buffer: &mut BytesMut) -> Result<Option<Frame>, Error> {
         None
     };
     if payload_len > usize::MAX as u64 {
-        return Err(Error::PayloadTooLong);
+        return Err(Error::MessageTooLong);
     }
-    let frame_size = header_size + payload_len as usize;
+    let frame_size = header_size
+        .checked_add(payload_len as usize)
+        .ok_or(Error::MessageTooLong)?;
     if buffer.len() < frame_size {
         return Ok(None);
     }
