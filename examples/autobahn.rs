@@ -42,21 +42,18 @@ async fn run_test_client(case: u32, host: &str) -> Result<(), molybdenite::Error
     .await
     .unwrap();
 
-    loop {
-        match ws.read().await {
-            Ok(msg) => match msg {
-                molybdenite::Message::Text(_) | molybdenite::Message::Binary(_) => {
-                    ws.write(&msg).await?;
-                    ws.flush().await?;
-                }
-                molybdenite::Message::Ping(data) => {
-                    ws.write(&molybdenite::Message::Pong(data)).await?;
-                    ws.flush().await?;
-                }
-                _ => {}
-            },
-
-            Err(_) => break,
+    while let Ok(msg) = ws.read().await {
+        match msg {
+            molybdenite::Message::Text(_) | molybdenite::Message::Binary(_) => {
+                ws.write(&msg).await?;
+                ws.flush().await?;
+            }
+            molybdenite::Message::Ping(data) => {
+                ws.write(&molybdenite::Message::Pong(data)).await?;
+                ws.flush().await?;
+            }
+            molybdenite::Message::Close(_) => break,
+            _ => {}
         }
     }
 
@@ -76,21 +73,18 @@ async fn run_test_server(bind: SocketAddr) -> Result<(), molybdenite::Error> {
             .unwrap();
 
         tokio::spawn(async move {
-            loop {
-                match ws.read().await {
-                    Ok(msg) => match msg {
-                        molybdenite::Message::Text(_) | molybdenite::Message::Binary(_) => {
-                            ws.write(&msg).await?;
-                            ws.flush().await?;
-                        }
-                        molybdenite::Message::Ping(data) => {
-                            ws.write(&molybdenite::Message::Pong(data)).await?;
-                            ws.flush().await?;
-                        }
-                        _ => {}
-                    },
-
-                    Err(_) => break,
+            while let Ok(msg) = ws.read().await {
+                match msg {
+                    molybdenite::Message::Text(_) | molybdenite::Message::Binary(_) => {
+                        ws.write(&msg).await?;
+                        ws.flush().await?;
+                    }
+                    molybdenite::Message::Ping(data) => {
+                        ws.write(&molybdenite::Message::Pong(data)).await?;
+                        ws.flush().await?;
+                    }
+                    molybdenite::Message::Close(_) => break,
+                    _ => {}
                 }
             }
             ws.close().await?;
