@@ -7,12 +7,18 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, BufStream};
 use url::Url;
 
+#[non_exhaustive]
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("I/O: {0}")]
     Io(#[from] tokio::io::Error),
     #[error("Could not get random data")]
     GetRandom(getrandom::Error),
+    #[error("Invalid UTF-8")]
+    InvalidUtf8(#[from] FromUtf8Error),
+    #[error("Invalid UTF-8 in Close frame")]
+    InvalidUtf8Close(#[from] Utf8Error),
+
     #[error("URL does not have a host")]
     NoHost,
     #[error("Incorrect scheme, not one of \"ws\" or \"wss\"")]
@@ -23,26 +29,25 @@ pub enum Error {
     InvalidHeaderLine(String),
     #[error("Missing or invalid header: {0}")]
     MissingOrInvalidHeader(&'static str),
+    #[error("Invalid request from client: {0}")]
+    InvalidRequest(String),
+
     #[error("Invalid payload length")]
     InvalidPayloadLen,
+    #[error("Payload too long")]
+    PayloadTooLong,
     #[error("The opcode was not expected at this time: {0:?}")]
     InvalidOpcode(Opcode),
     #[error("Tried to send/receive a message on a closed websocket")]
     WasClosed,
-    #[error("Invalid UTF-8")]
-    InvalidUtf8(#[from] FromUtf8Error),
-    #[error("Invalid UTF-8 in Close frame")]
-    InvalidUtf8Close(#[from] Utf8Error),
-    #[error("Got an unexpected HTTP request from client: {0}")]
-    UnexpectedRequest(String),
     #[error("Got a fragmented control frame")]
     FragmentedControl,
     #[error("Got control frame larger than 127 bytes")]
     TooLargeControl,
     #[error("RSV bits were set")]
     RsvSet,
-    #[error("Invalid request from client")]
-    InvalidRequest(#[from] url::ParseError),
+    #[error("This is a bug 😭 {0}")]
+    Bug(&'static str),
 }
 
 impl Error {
@@ -61,11 +66,13 @@ pub struct Close {
 
 impl Close {
     pub fn status(&self) -> u16 {
-        todo!()
+        debug_assert!(self.bytes.len() >= 2);
+        u16::from_be_bytes([self.bytes[0], self.bytes[1]])
     }
 
     pub fn reason(&self) -> Result<&str, Error> {
-        todo!()
+        debug_assert!(self.bytes.len() >= 2);
+        Ok(std::str::from_utf8(&self.bytes[2..])?)
     }
 }
 
@@ -289,7 +296,7 @@ where
                 match first_opcode {
                     Opcode::Text => Ok(Message::Text(String::from_utf8(read_payload)?)),
                     Opcode::Binary => Ok(Message::Binary(read_payload)),
-                    _ => unreachable!("Not text or binary"),
+                    _ => Err(Error::Bug("not text or binary in open")),
                 }
             }
 
@@ -301,7 +308,7 @@ where
                     match frame.opcode() {
                         Opcode::Continuation => {
                             let State::PartialRead { read_payload, .. } = state else {
-                                unreachable!("Not partial read");
+                                return Err(Error::Bug("not partial read extending"));
                             };
                             read_payload.extend(frame.payload());
                             Ok(None)
@@ -332,13 +339,13 @@ where
                     first_opcode,
                 } = std::mem::replace(&mut self.state, State::Open)
                 else {
-                    unreachable!("Not partial read");
+                    return Err(Error::Bug("not partial read in replace"));
                 };
 
                 match first_opcode {
                     Opcode::Text => Ok(Message::Text(String::from_utf8(read_payload)?)),
                     Opcode::Binary => Ok(Message::Binary(read_payload)),
-                    _ => unreachable!("Not text or binary"),
+                    _ => Err(Error::Bug("not text or binary in partial read") ),
                 }
             }
         }

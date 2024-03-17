@@ -76,6 +76,26 @@ fn first_short(opcode: Opcode, mask_key: Option<u32>, payload: &[u8]) -> u16 {
     first_short
 }
 
+fn num_to_opcode(n: usize) -> Opcode {
+    match n {
+        0 => Opcode::Continuation,
+        1 => Opcode::Text,
+        2 => Opcode::Binary,
+        8 => Opcode::Close,
+        9 => Opcode::Ping,
+        10 => Opcode::Pong,
+        _ => Opcode::Reserved,
+    }
+}
+
+fn short_to_opcode(short: u16) -> Opcode {
+    num_to_opcode(((short & OPCODE) >> 8) as usize)
+}
+
+fn rsv_set(short: u16) -> bool {
+    short & (RSV1 | RSV2 | RSV3) != 0
+}
+
 #[derive(Debug)]
 pub struct Frame {
     first_short: u16,
@@ -92,19 +112,7 @@ impl Frame {
     }
 
     pub fn opcode(&self) -> Opcode {
-        match (self.first_short & OPCODE) >> 8 {
-            0 => Opcode::Continuation,
-            1 => Opcode::Text,
-            2 => Opcode::Binary,
-            8 => Opcode::Close,
-            9 => Opcode::Ping,
-            10 => Opcode::Pong,
-            _ => Opcode::Reserved,
-        }
-    }
-
-    pub fn rsv_set(&self) -> bool {
-        self.first_short & (RSV1 | RSV2 | RSV3) != 0
+        short_to_opcode(self.first_short)
     }
 }
 
@@ -134,20 +142,6 @@ where
     pub async fn read_frame(&mut self) -> Result<Option<Frame>, Error> {
         loop {
             if let Some(frame) = self.parse_frame()? {
-                if frame.opcode().is_control() {
-                    if !frame.fin() {
-                        return Err(Error::FragmentedControl);
-                    }
-
-                    if frame.payload.len() > SMALL_PAYLOAD_USIZE {
-                        return Err(Error::TooLargeControl);
-                    }
-                }
-
-                if frame.rsv_set() {
-                    return Err(Error::RsvSet);
-                }
-
                 return Ok(Some(frame));
             }
 
@@ -198,7 +192,7 @@ where
             0..=SMALL_PAYLOAD => 0,
             EXTENDED_PAYLOAD => EXTENDED_PAYLOAD_SIZE,
             BIG_EXTENDED_PAYLOAD => BIG_EXTENDED_PAYLOAD_SIZE,
-            _ => unreachable!(),
+            _ => return Err(Error::Bug("unexpected payload len")),
         };
         let mask_key_size = if first_short & MASK != 0 {
             MASK_KEY_SIZE
@@ -206,6 +200,21 @@ where
             0
         };
         let header_size = FIRST_SHORT_SIZE + payload_len_size + mask_key_size;
+        let opcode = short_to_opcode(first_short);
+        if Opcode::Reserved == opcode {
+            return Err(Error::InvalidOpcode(Opcode::Reserved));
+        }
+        if opcode.is_control() {
+            if first_short & FIN == 0 {
+                return Err(Error::FragmentedControl);
+            }
+            if payload_len_size != 0 {
+                return Err(Error::TooLargeControl);
+            }
+        }
+        if rsv_set(first_short) {
+            return Err(Error::RsvSet);
+        }
         if self.buffer.len() < header_size {
             return Ok(None);
         }
@@ -226,7 +235,7 @@ where
                 self.buffer[FIRST_SHORT_SIZE + 6],
                 self.buffer[FIRST_SHORT_SIZE + 7],
             ]),
-            _ => unreachable!(),
+            _ => return Err(Error::Bug("unexpected payload len size")),
         };
         let mask_key = if first_short & MASK != 0 {
             Some(u32::from_be_bytes([
@@ -239,7 +248,7 @@ where
             None
         };
         if payload_len > usize::MAX as u64 {
-            todo!();
+            return Err(Error::PayloadTooLong);
         }
         let frame_size = header_size + payload_len as usize;
         if self.buffer.len() < frame_size {

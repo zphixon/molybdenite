@@ -34,7 +34,7 @@ pub async fn server(
     let mut lines = request_str.lines().enumerate();
     let Some((_, request_line)) = lines.next() else {
         // TODO nicer error value
-        return Err(Error::UnexpectedRequest(String::from("(no request)")));
+        return Err(Error::InvalidRequest(String::from("(no request)")));
     };
 
     let mut split = request_line.split_ascii_whitespace();
@@ -42,7 +42,7 @@ pub async fn server(
     let (Some("GET"), Some(got_request_path), Some("HTTP/1.1")) =
         (split.next(), split.next(), split.next())
     else {
-        return Err(Error::UnexpectedRequest(request_line.into()));
+        return Err(Error::InvalidRequest(request_line.into()));
     };
     let request_path = String::from(got_request_path);
 
@@ -74,7 +74,8 @@ pub async fn server(
         host,
         request_path
     )
-    .parse()?;
+    .parse::<Url>()
+    .map_err(|err| Error::InvalidRequest(err.to_string()))?;
 
     if headers
         .get("connection")
