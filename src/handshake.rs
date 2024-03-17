@@ -31,6 +31,11 @@ async fn read_headers(
 
         headers.insert(header.to_lowercase(), String::from(value));
         line_bytes.clear();
+
+        if headers.len() > 8192 {
+            // bro stop
+            break;
+        }
     }
 
     Ok(headers)
