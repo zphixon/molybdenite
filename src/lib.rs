@@ -25,6 +25,8 @@ pub enum Error {
     InvalidUtf8String(#[from] FromUtf8Error),
     #[error("Invalid UTF-8 in Close frame")]
     InvalidUtf8Str(#[from] Utf8Error),
+    #[error("Invalid UTF-8 in headers")]
+    InvalidUtf8Header,
 
     #[error("URL does not have a host")]
     NoHost,
