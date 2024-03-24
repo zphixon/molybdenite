@@ -2,68 +2,57 @@ use crate::Error;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use sha1_smol::Sha1;
 use std::collections::HashMap;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufStream};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufStream};
 use url::Url;
 
 const SWITCHING_PROTOCOLS: &str = "HTTP/1.1 101 Switching Protocols";
 const SEC_WEBSOCKET_ACCEPT_UUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
-async fn read_headers(
+struct CodepointReceiver {
+    string: String,
+    valid: bool,
+}
+
+impl utf8parse::Receiver for CodepointReceiver {
+    fn codepoint(&mut self, c: char) {
+        self.string.push(c);
+    }
+
+    fn invalid_sequence(&mut self) {
+        self.valid = false;
+    }
+}
+
+async fn read_utf8_until(
     stream: &mut BufStream<impl AsyncRead + AsyncWrite + Unpin>,
-) -> Result<HashMap<String, String>, Error> {
-    #[derive(Debug)]
-    enum ExpectUtf8Byte {
-        Any,
-        Continuation(u8),
-    }
-    impl ExpectUtf8Byte {
-        fn next(self, byte: u8) -> Result<ExpectUtf8Byte, Error> {
-            match self {
-                ExpectUtf8Byte::Any => {
-                    if byte & 0b10000000 == 0b00000000 {
-                        Ok(ExpectUtf8Byte::Any)
-                    } else if byte & 0b11100000 == 0b11000000 {
-                        Ok(ExpectUtf8Byte::Continuation(1))
-                    } else if byte & 0b11110000 == 0b11100000 {
-                        Ok(ExpectUtf8Byte::Continuation(2))
-                    } else if byte & 0b11111000 == 0b11110000 {
-                        Ok(ExpectUtf8Byte::Continuation(3))
-                    } else {
-                        Err(Error::InvalidUtf8Header)
-                    }
-                }
+    until: &'static str,
+) -> Result<String, Error> {
+    let mut parser = utf8parse::Parser::new();
+    let mut receiver = CodepointReceiver {
+        valid: true,
+        string: String::new(),
+    };
 
-                ExpectUtf8Byte::Continuation(n @ (1 | 2 | 3)) => {
-                    if byte & 0b11000000 == 0b10000000 {
-                        if n == 1 {
-                            Ok(ExpectUtf8Byte::Any)
-                        } else {
-                            Ok(ExpectUtf8Byte::Continuation(n - 1))
-                        }
-                    } else {
-                        Err(Error::InvalidUtf8Header)
-                    }
-                }
-
-                _ => Err(Error::Bug("utf8 checker")),
-            }
-        }
-    }
-
-    let mut state = ExpectUtf8Byte::Any;
-    let mut headers_bytes = Vec::new();
     loop {
         let byte = stream.read_u8().await?;
-        state = state.next(byte)?;
-        headers_bytes.push(byte);
-        if headers_bytes.len() > 32767 || headers_bytes.ends_with(b"\r\n\r\n") {
-            // bro stop
+        parser.advance(&mut receiver, byte);
+        if !receiver.valid {
+            return Err(Error::InvalidUtf8Header);
+        }
+        if receiver.string.len() > 32767 || receiver.string.ends_with(until) {
             break;
         }
     }
 
+    Ok(receiver.string)
+}
+
+async fn read_headers(
+    stream: &mut BufStream<impl AsyncRead + AsyncWrite + Unpin>,
+) -> Result<HashMap<String, String>, Error> {
+    let headers_str = read_utf8_until(stream, "\r\n\r\n").await?;
     let mut headers = HashMap::new();
-    let headers_str = std::str::from_utf8(&headers_bytes)?.trim();
+
     for line in headers_str.lines() {
         if line.is_empty() {
             break;
@@ -88,9 +77,7 @@ pub async fn server(
     stream: &mut BufStream<impl AsyncRead + AsyncWrite + Unpin>,
     secure: bool,
 ) -> Result<Url, Error> {
-    let mut request_line_bytes = Vec::new();
-    stream.read_until(b'\n', &mut request_line_bytes).await?;
-    let request_line = std::str::from_utf8(&request_line_bytes)?.trim();
+    let request_line = read_utf8_until(stream, "\n").await?;
     let mut split = request_line.split_ascii_whitespace();
     let (Some("GET"), Some(got_request_path), Some("HTTP/1.1")) =
         (split.next(), split.next(), split.next())
@@ -203,9 +190,8 @@ pub async fn client(
     stream.write_all(request.as_bytes()).await?;
     stream.flush().await?;
 
-    let mut response_line_bytes = Vec::new();
-    stream.read_until(b'\n', &mut response_line_bytes).await?;
-    let response_line = std::str::from_utf8(&response_line_bytes)?.trim();
+    let response_line_string = read_utf8_until(stream, "\n").await?;
+    let response_line = response_line_string.trim();
     if response_line != SWITCHING_PROTOCOLS {
         return Err(Error::UnexpectedStatus(response_line.into()));
     }

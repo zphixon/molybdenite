@@ -46,6 +46,7 @@ fn unmask_payload(payload: &mut [u8], mask_key: u32) {
     }
 }
 
+/// unknown if cancel safe
 async fn write_masked(
     data: &[u8],
     mask_key: u32,
@@ -139,6 +140,7 @@ where
         Ok(())
     }
 
+    /// cancellation safe
     pub async fn read_frame(&mut self) -> Result<Option<Frame>, Error> {
         loop {
             if let Some(frame) = parse_frame(&mut self.buffer)? {
@@ -155,6 +157,7 @@ where
         }
     }
 
+    /// not cancellation safe
     pub async fn write_message(&mut self, message: MessageRef<'_>) -> Result<(), Error> {
         let payload = message.payload();
         self.stream
@@ -182,6 +185,7 @@ where
         Ok(())
     }
 
+    /// not cancellation safe
     pub async fn write_close(&mut self) -> Result<(), Error> {
         let mut first_short = 0b1000_1000_0000_0000;
 

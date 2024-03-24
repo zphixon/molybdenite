@@ -236,6 +236,7 @@ where
         })
     }
 
+    /// cancellation safe
     async fn next_frame(&mut self) -> Result<Frame, Error> {
         match self.stream.read_frame().await? {
             Some(frame) => Ok(frame),
@@ -246,6 +247,7 @@ where
         }
     }
 
+    /// cancellation safe
     pub async fn read(&mut self) -> Result<Message, Error> {
         fn close(frame: Frame) -> Message {
             let payload = frame.payload();
@@ -360,6 +362,7 @@ where
         }
     }
 
+    /// not cancellation safe
     pub async fn write<'data>(&mut self, message: impl AsMessageRef<'data>) -> Result<(), Error> {
         let message = message.into_message_ref();
         self.stream.write_message(message).await
@@ -369,6 +372,7 @@ where
         self.stream.flush().await
     }
 
+    /// not cancellation safe
     pub async fn close(&mut self) -> Result<(), Error> {
         self.stream.write_close().await?;
         self.flush().await
