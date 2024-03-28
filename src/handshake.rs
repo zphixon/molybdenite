@@ -1,4 +1,4 @@
-use crate::Error;
+use crate::{Error, HandshakeError, Utf8Error};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use sha1_smol::Sha1;
 use std::collections::HashMap;
@@ -37,7 +37,7 @@ async fn read_utf8_until(
         let byte = stream.read_u8().await?;
         parser.advance(&mut receiver, byte);
         if !receiver.valid {
-            return Err(Error::InvalidUtf8Header);
+            return Err(Error::Utf8(Utf8Error::Handshake));
         }
         if receiver.string.len() > 32767 || receiver.string.ends_with(until) {
             break;
@@ -60,14 +60,18 @@ async fn read_headers(
         let mut split = line.split(": ");
 
         let Some(header) = split.next() else {
-            return Err(Error::InvalidHeaderLine(line.into()));
+            return Err(Error::Handshake(HandshakeError::MissingOrInvalidHeader(
+                line.into(),
+            )));
         };
 
         let Some(value) = split.next() else {
-            return Err(Error::InvalidHeaderLine(line.into()));
+            return Err(Error::Handshake(HandshakeError::MissingOrInvalidHeader(
+                line.into(),
+            )));
         };
 
-        headers.insert(header.to_lowercase(), String::from(value));
+        headers.insert(header.to_lowercase(), value.into());
     }
 
     Ok(headers)
@@ -82,14 +86,18 @@ pub async fn server(
     let (Some("GET"), Some(got_request_path), Some("HTTP/1.1")) =
         (split.next(), split.next(), split.next())
     else {
-        return Err(Error::InvalidRequest(request_line.into()));
+        return Err(Error::Handshake(HandshakeError::InvalidRequest(
+            request_line,
+        )));
     };
     let request_path = String::from(got_request_path);
 
     let headers = read_headers(stream).await?;
 
     let Some(host) = headers.get("host") else {
-        return Err(Error::MissingOrInvalidHeader("Host"));
+        return Err(Error::Handshake(HandshakeError::MissingOrInvalidHeader(
+            "Host".into(),
+        )));
     };
 
     let request_url: Url = format!(
@@ -99,14 +107,16 @@ pub async fn server(
         request_path
     )
     .parse::<Url>()
-    .map_err(|err| Error::InvalidRequest(err.to_string()))?;
+    .map_err(|_| Error::Handshake(HandshakeError::InvalidRequest(request_path)))?;
 
     if headers
         .get("connection")
         .map(|connection| connection.eq_ignore_ascii_case("upgrade"))
         != Some(true)
     {
-        return Err(Error::MissingOrInvalidHeader("Connection"));
+        return Err(Error::Handshake(HandshakeError::MissingOrInvalidHeader(
+            "Connection".into(),
+        )));
     }
 
     if headers
@@ -114,7 +124,9 @@ pub async fn server(
         .map(|upgrade| upgrade.eq_ignore_ascii_case("websocket"))
         != Some(true)
     {
-        return Err(Error::MissingOrInvalidHeader("Upgrade"));
+        return Err(Error::Handshake(HandshakeError::MissingOrInvalidHeader(
+            "Upgrade".into(),
+        )));
     }
 
     if headers
@@ -122,11 +134,15 @@ pub async fn server(
         .map(|swv| swv.eq_ignore_ascii_case("13"))
         != Some(true)
     {
-        return Err(Error::MissingOrInvalidHeader("Sec-WebSocket-Version"));
+        return Err(Error::Handshake(HandshakeError::MissingOrInvalidHeader(
+            "Sec-WebSocket-Version".into(),
+        )));
     }
 
     let Some(key_base64) = headers.get("sec-websocket-key") else {
-        return Err(Error::MissingOrInvalidHeader("Sec-WebSocket-Key"));
+        return Err(Error::Handshake(HandshakeError::MissingOrInvalidHeader(
+            "Sec-WebSocket-Key".into(),
+        )));
     };
 
     let sec_websocket_accept_bytes =
@@ -158,11 +174,15 @@ pub async fn client(
     stream: &mut BufStream<impl AsyncRead + AsyncWrite + Unpin>,
 ) -> Result<(), Error> {
     let ("ws" | "wss") = url.scheme() else {
-        return Err(Error::IncorrectScheme);
+        return Err(Error::Handshake(HandshakeError::IncorrectScheme(
+            url.scheme().into(),
+        )));
     };
 
     let secure = url.scheme() == "wss";
-    let host = url.host_str().ok_or_else(|| Error::NoHost)?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| Error::Handshake(HandshakeError::NoHostInUrl))?;
     let port = url.port().unwrap_or(if secure { 443 } else { 80 });
 
     let resource_name = match url.query() {
@@ -193,7 +213,9 @@ pub async fn client(
     let response_line_string = read_utf8_until(stream, "\n").await?;
     let response_line = response_line_string.trim();
     if response_line != SWITCHING_PROTOCOLS {
-        return Err(Error::UnexpectedStatus(response_line.into()));
+        return Err(Error::Handshake(HandshakeError::UnexpectedResponse(
+            response_line_string,
+        )));
     }
 
     let headers = read_headers(stream).await?;
@@ -210,7 +232,9 @@ pub async fn client(
         .map(|connection| connection.eq_ignore_ascii_case("upgrade"))
         != Some(true)
     {
-        return Err(Error::MissingOrInvalidHeader("Connection"));
+        return Err(Error::Handshake(HandshakeError::MissingOrInvalidHeader(
+            "Connection".into(),
+        )));
     }
 
     if headers
@@ -218,7 +242,9 @@ pub async fn client(
         .map(|upgrade| upgrade.eq_ignore_ascii_case("websocket"))
         != Some(true)
     {
-        return Err(Error::MissingOrInvalidHeader("Upgrade"));
+        return Err(Error::Handshake(HandshakeError::MissingOrInvalidHeader(
+            "Upgrade".into(),
+        )));
     }
 
     if headers
@@ -226,7 +252,9 @@ pub async fn client(
         .map(|swa| swa.eq_ignore_ascii_case(expect_sec_websocket_accept_base64.as_str()))
         != Some(true)
     {
-        return Err(Error::MissingOrInvalidHeader("Sec-WebSocket-Accept"));
+        return Err(Error::Handshake(HandshakeError::MissingOrInvalidHeader(
+            "Sec-WebSocket-Accept".into(),
+        )));
     }
 
     Ok(())

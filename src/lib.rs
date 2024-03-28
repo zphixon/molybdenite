@@ -9,7 +9,6 @@ mod frame;
 mod handshake;
 
 use frame::{Frame, FrameStream, Opcode};
-use std::{str::Utf8Error, string::FromUtf8Error};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, BufStream};
 use url::Url;
@@ -21,42 +20,64 @@ pub enum Error {
     Io(#[from] tokio::io::Error),
     #[error("Could not get random data")]
     GetRandom(getrandom::Error),
-    #[error("Invalid UTF-8")]
-    InvalidUtf8String(#[from] FromUtf8Error),
-    #[error("Invalid UTF-8 in Close frame")]
-    InvalidUtf8Str(#[from] Utf8Error),
-    #[error("Invalid UTF-8 in headers")]
-    InvalidUtf8Header,
-
-    #[error("URL does not have a host")]
-    NoHost,
-    #[error("Incorrect scheme, not one of \"ws\" or \"wss\"")]
-    IncorrectScheme,
-    #[error("Got an unexpected HTTP status in response: {0}")]
-    UnexpectedStatus(String),
-    #[error("Invalid header line")]
-    InvalidHeaderLine(String),
-    #[error("Missing or invalid header: {0}")]
-    MissingOrInvalidHeader(&'static str),
-    #[error("Invalid request from client: {0}")]
-    InvalidRequest(String),
-
-    #[error("Invalid payload length")]
-    InvalidPayloadLen,
-    #[error("Payload too long")]
-    MessageTooLong,
-    #[error("The opcode was not expected at this time: {0:?}")]
-    InvalidOpcode(Opcode),
-    #[error("Tried to send/receive a message on a closed websocket")]
+    #[error("Invalid UTF-8: {0}")]
+    Utf8(Utf8Error),
+    #[error("Handshake unsuccessful: {0}")]
+    Handshake(HandshakeError),
+    #[error("A frame was malformed: {0}")]
+    Frame(FrameError),
+    #[error("Tried to send or receive on a closed websocket")]
     WasClosed,
-    #[error("Got a fragmented control frame")]
-    FragmentedControl,
-    #[error("Got control frame larger than 127 bytes")]
-    TooLargeControl,
-    #[error("RSV bits were set")]
-    RsvSet,
     #[error("This is a bug 😭 {0}")]
     Bug(&'static str),
+}
+
+#[derive(Debug, Error)]
+pub enum Utf8Error {
+    #[error("Close reason")]
+    CloseReason,
+    #[error("Text message")]
+    TextMessage,
+    #[error("Text message")]
+    TextMessagePartialRead,
+    #[error("Handshake data")]
+    Handshake,
+}
+
+#[derive(Debug, Error)]
+pub enum FrameError {
+    #[error("Reserved opcode")]
+    ReservedOpcode,
+    #[error("Fragmented control frame")]
+    FragmentedControl,
+    #[error("Control frame too large")]
+    LargeControl,
+    #[error("Reserved bit set")]
+    RsvSet,
+    #[error("Frame payload too long (greater than usize::MAX)")]
+    FramePayloadTooLong,
+    #[error("Entire frame too long (would overflow usize)")]
+    FrameTooLong,
+    #[error("Unexpected opcode (open state)")]
+    UnexpectedOpcodeOpen,
+    #[error("Unexpected opcode (open state, non-final frame)")]
+    UnexpectedOpcodeOpenNonFinal,
+    #[error("Unexpected opcode (partial read state)")]
+    UnexpectedOpcodePartialRead,
+}
+
+#[derive(Debug, Error)]
+pub enum HandshakeError {
+    #[error("Invalid request: {0}")]
+    InvalidRequest(String),
+    #[error("Missing or invalid header: {0}")]
+    MissingOrInvalidHeader(String),
+    #[error("Incorrect scheme for request: {0}")]
+    IncorrectScheme(String),
+    #[error("Request URL is missing a host")]
+    NoHostInUrl,
+    #[error("Unexpected response from server: {0}")]
+    UnexpectedResponse(String),
 }
 
 impl Error {
@@ -81,7 +102,7 @@ impl Close {
 
     pub fn reason(&self) -> Result<&str, Error> {
         debug_assert!(self.bytes.len() >= 2);
-        Ok(std::str::from_utf8(&self.bytes[2..])?)
+        std::str::from_utf8(&self.bytes[2..]).map_err(|_| Error::Utf8(Utf8Error::CloseReason))
     }
 }
 
@@ -268,7 +289,7 @@ where
                     Opcode::Ping => return Ok(Message::Ping(frame.payload())),
                     Opcode::Pong => return Ok(Message::Pong(frame.payload())),
                     Opcode::Close => return Ok(close(frame)),
-                    op => return Err(Error::InvalidOpcode(op)),
+                    _ => return Err(Error::Frame(FrameError::UnexpectedOpcodeOpen)),
                 }
 
                 let first_opcode = frame.opcode();
@@ -300,12 +321,15 @@ where
                             return Ok(Message::Pong(frame.payload()));
                         }
 
-                        op => return Err(Error::InvalidOpcode(op)),
+                        _ => return Err(Error::Frame(FrameError::UnexpectedOpcodeOpenNonFinal)),
                     }
                 }
 
                 match first_opcode {
-                    Opcode::Text => Ok(Message::Text(String::from_utf8(read_payload)?)),
+                    Opcode::Text => Ok(Message::Text(
+                        String::from_utf8(read_payload)
+                            .map_err(|_| Error::Utf8(Utf8Error::TextMessage))?,
+                    )),
                     Opcode::Binary => Ok(Message::Binary(read_payload)),
                     _ => Err(Error::Bug("not text or binary in open")),
                 }
@@ -328,7 +352,7 @@ where
                         Opcode::Pong => Ok(Some(Message::Pong(frame.payload()))),
                         Opcode::Close => Ok(Some(close(frame))),
 
-                        op => Err(Error::InvalidOpcode(op)),
+                        _ => Err(Error::Frame(FrameError::UnexpectedOpcodePartialRead)),
                     }
                 }
 
@@ -354,7 +378,10 @@ where
                 };
 
                 match first_opcode {
-                    Opcode::Text => Ok(Message::Text(String::from_utf8(read_payload)?)),
+                    Opcode::Text => Ok(Message::Text(
+                        String::from_utf8(read_payload)
+                            .map_err(|_| Error::Utf8(Utf8Error::TextMessagePartialRead))?,
+                    )),
                     Opcode::Binary => Ok(Message::Binary(read_payload)),
                     _ => Err(Error::Bug("not text or binary in partial read")),
                 }

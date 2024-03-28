@@ -1,4 +1,4 @@
-use crate::{Error, MessageRef};
+use crate::{Error, FrameError, MessageRef};
 use bytes::BytesMut;
 use std::mem::size_of;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
@@ -223,18 +223,18 @@ pub fn parse_frame(buffer: &mut BytesMut) -> Result<Option<Frame>, Error> {
     let header_size = FIRST_SHORT_SIZE + payload_len_size + mask_key_size;
     let opcode = short_to_opcode(first_short);
     if Opcode::Reserved == opcode {
-        return Err(Error::InvalidOpcode(Opcode::Reserved));
+        return Err(Error::Frame(FrameError::ReservedOpcode));
     }
     if opcode.is_control() {
         if first_short & FIN == 0 {
-            return Err(Error::FragmentedControl);
+            return Err(Error::Frame(FrameError::FragmentedControl));
         }
         if payload_len_size != 0 {
-            return Err(Error::TooLargeControl);
+            return Err(Error::Frame(FrameError::LargeControl));
         }
     }
     if rsv_set(first_short) {
-        return Err(Error::RsvSet);
+        return Err(Error::Frame(FrameError::RsvSet));
     }
     if buffer.len() < header_size {
         return Ok(None);
@@ -268,11 +268,11 @@ pub fn parse_frame(buffer: &mut BytesMut) -> Result<Option<Frame>, Error> {
         None
     };
     if payload_len > usize::MAX as u64 {
-        return Err(Error::MessageTooLong);
+        return Err(Error::Frame(FrameError::FramePayloadTooLong));
     }
     let frame_size = header_size
         .checked_add(payload_len as usize)
-        .ok_or(Error::MessageTooLong)?;
+        .ok_or(Error::Frame(FrameError::FrameTooLong))?;
     if buffer.len() < frame_size {
         return Ok(None);
     }
