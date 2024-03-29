@@ -13,19 +13,26 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, BufStream};
 use url::Url;
 
+/// Errors that may occur
 #[non_exhaustive]
 #[derive(Error, Debug)]
 pub enum Error {
+    /// Generic Tokio I/O error
     #[error("I/O: {0}")]
     Io(#[from] tokio::io::Error),
+    /// Problem generating client mask key
     #[error("Could not get random data")]
     GetRandom(getrandom::Error),
+    /// Something was not valid UTF-8
     #[error("Invalid UTF-8: {0}")]
     Utf8(Utf8Error),
+    /// The handshake could not be completed
     #[error("Handshake unsuccessful: {0}")]
     Handshake(HandshakeError),
+    /// A frame received was incorrect
     #[error("A frame was malformed: {0}")]
     Frame(FrameError),
+    /// A websocket was closed
     #[error("Tried to send or receive on a closed websocket")]
     WasClosed,
     #[error("Called `connect` on a server, or `accept` on a client")]
@@ -128,7 +135,7 @@ pub enum MessageRef<'data> {
     Close(Option<&'data Close>),
 }
 
-impl MessageRef<'_> {
+impl<'data> MessageRef<'data> {
     fn opcode(&self) -> Opcode {
         match self {
             MessageRef::Text(_) => Opcode::Text,
@@ -147,6 +154,44 @@ impl MessageRef<'_> {
             MessageRef::Pong(data) => data,
             MessageRef::Close(close) => close.map(|close| close.bytes.as_slice()).unwrap_or(&[]),
         }
+    }
+
+    pub fn as_str(&self) -> Result<&'data str, Error> {
+        match self {
+            MessageRef::Text(text) => Ok(text),
+            MessageRef::Binary(data) | MessageRef::Ping(data) | MessageRef::Pong(data) => {
+                std::str::from_utf8(data).map_err(|_| Error::Utf8(Utf8Error::TextMessage))
+            }
+            MessageRef::Close(Some(close)) => close.reason(),
+            MessageRef::Close(None) => Ok(""),
+        }
+    }
+
+    pub fn as_text(&self) -> Option<&'data str> {
+        match self {
+            MessageRef::Text(text) => Some(text),
+            _ => None,
+        }
+    }
+
+    pub fn is_text(&self) -> bool {
+        matches!(self, MessageRef::Text(_))
+    }
+
+    pub fn is_binary(&self) -> bool {
+        matches!(self, MessageRef::Binary(_))
+    }
+
+    pub fn is_ping(&self) -> bool {
+        matches!(self, MessageRef::Ping(_))
+    }
+
+    pub fn is_pong(&self) -> bool {
+        matches!(self, MessageRef::Pong(_))
+    }
+
+    pub fn is_close(&self) -> bool {
+        matches!(self, MessageRef::Close(_))
     }
 }
 
@@ -171,42 +216,31 @@ impl Message {
     }
 
     pub fn as_str(&self) -> Result<&str, Error> {
-        match self {
-            Message::Text(text) => Ok(text.as_str()),
-            Message::Binary(data) | Message::Ping(data) | Message::Pong(data) => {
-                std::str::from_utf8(data.as_slice())
-                    .map_err(|_| Error::Utf8(Utf8Error::TextMessage))
-            }
-            Message::Close(Some(close)) => close.reason(),
-            Message::Close(None) => Ok(""),
-        }
+        self.as_ref().as_str()
     }
 
     pub fn as_text(&self) -> Option<&str> {
-        match self {
-            Message::Text(text) => Some(text.as_str()),
-            _ => None,
-        }
+        self.as_ref().as_text()
     }
 
     pub fn is_text(&self) -> bool {
-        matches!(self, Message::Text(_))
+        self.as_ref().is_text()
     }
 
     pub fn is_binary(&self) -> bool {
-        matches!(self, Message::Binary(_))
+        self.as_ref().is_binary()
     }
 
     pub fn is_ping(&self) -> bool {
-        matches!(self, Message::Ping(_))
+        self.as_ref().is_ping()
     }
 
     pub fn is_pong(&self) -> bool {
-        matches!(self, Message::Pong(_))
+        self.as_ref().is_pong()
     }
 
     pub fn is_close(&self) -> bool {
-        matches!(self, Message::Close(_))
+        self.as_ref().is_close()
     }
 }
 
@@ -484,7 +518,10 @@ where
         }
 
         let message = message.into_message_ref();
-        self.stream.write_message(message, self.fragment_size).await
+        self.stream
+            .write_message(message, self.fragment_size)
+            .await?;
+        Ok(())
     }
 
     pub async fn flush(&mut self) -> Result<(), Error> {
