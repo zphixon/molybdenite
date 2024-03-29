@@ -60,8 +60,8 @@ async fn write_masked(
     Ok(())
 }
 
-fn first_short(opcode: Opcode, mask_key: Option<u32>, payload: &[u8]) -> u16 {
-    let mut first_short = FIN;
+fn first_short(fin: bool, opcode: Opcode, mask_key: Option<u32>, payload: &[u8]) -> u16 {
+    let mut first_short = if fin { FIN } else { 0 };
     first_short |= (opcode as u16) << 8;
 
     first_short |= match payload.len() {
@@ -172,7 +172,7 @@ where
         if must_write <= 1 || message.opcode().is_control() {
             // We only need one, or it's a control frame which cannot be fragmented
             self.write_frame(
-                first_short(message.opcode(), self.mask_key, message.payload()),
+                first_short(true, message.opcode(), self.mask_key, message.payload()),
                 message.payload(),
             )
             .await?;
@@ -187,13 +187,13 @@ where
 
             let first_short = if written == 0 {
                 // First frame is normal opcode and !FIN
-                first_short(message.opcode(), self.mask_key, partial_payload) & !FIN
+                first_short(false, message.opcode(), self.mask_key, partial_payload)
             } else if written + 1 != must_write {
                 // Frames between first and last are continuation and !FIN
-                first_short(Opcode::Continuation, self.mask_key, partial_payload) & !FIN
+                first_short(false, Opcode::Continuation, self.mask_key, partial_payload)
             } else {
                 // Last frame is continuation and FIN
-                first_short(Opcode::Continuation, self.mask_key, partial_payload)
+                first_short(true, Opcode::Continuation, self.mask_key, partial_payload)
             };
 
             self.write_frame(first_short, partial_payload).await?;

@@ -122,21 +122,40 @@ enum Role {
 const DEFAULT_BIND: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 9001);
 
 #[derive(argh::FromArgs)]
-#[argh(subcommand, name = "serve", description = "")]
+#[argh(
+    subcommand,
+    name = "serve",
+    description = "test using molybdenite as a server - should be run against `run_autobahn_container.sh run_test_client`"
+)]
 struct Serve {
-    #[argh(positional, description = "a", default = "DEFAULT_BIND")]
+    #[argh(
+        positional,
+        description = "address to bind the molybdenite test server to",
+        default = "DEFAULT_BIND"
+    )]
     bind: SocketAddr,
 }
 
 const DEFAULT_HOST: &str = "localhost:9001";
 
 #[derive(argh::FromArgs)]
-#[argh(subcommand, name = "request", description = "")]
+#[argh(
+    subcommand,
+    name = "request",
+    description = "test using molybdenite as a client - should be run against `run_autobahn_container.sh run_test_server`"
+)]
 struct Request {
-    #[argh(positional, description = "a", default = "DEFAULT_HOST.into()")]
+    #[argh(
+        positional,
+        description = "host to connect to",
+        default = "DEFAULT_HOST.into()"
+    )]
     host: String,
 
-    #[argh(option, description = "a")]
+    #[argh(
+        option,
+        description = "case number to run. unfortunately not a case number like 6.1.2, just a regular number like 66"
+    )]
     case: Option<u32>,
 }
 
