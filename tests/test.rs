@@ -24,9 +24,10 @@ fn ws_url(addr: &str, case: &str) -> Url {
     Url::parse(&format!("ws://{}/{}", addr, case)).unwrap()
 }
 
-async fn echo_client(addr: &str, case: &str) {
+async fn echo_client(addr: &str, fragment_size: usize, case: &str) {
     let stream = TcpStream::connect(addr).await.unwrap();
     let mut ws = WebSocket::client(ws_url(addr, case), stream).unwrap();
+    ws.set_fragment_size(fragment_size);
     ws.client_handshake().await.unwrap();
     loop {
         let msg = ws.read().await.unwrap();
@@ -41,7 +42,8 @@ async fn echo_client(addr: &str, case: &str) {
     ws.close().await.unwrap();
 }
 
-async fn expect_echo(ws: &mut WebSocket<TcpStream>, messages: &[MessageRef<'_>]) {
+async fn expect_echo(ws: &mut WebSocket<TcpStream>, fragment_size: usize, messages: &[MessageRef<'_>]) {
+    ws.set_fragment_size(fragment_size);
     for message in messages {
         ws.write(*message).await.unwrap();
     }
@@ -71,14 +73,14 @@ fn echo(messages: Vec<MessageRef<'static>>, fragment_size: usize, case: &str) {
         let (socket, _) = listener.accept().await.unwrap();
         let mut ws = WebSocket::server(false, socket);
         ws.server_handshake().await.unwrap();
-        expect_echo(&mut ws, messages.as_slice()).await;
+        expect_echo(&mut ws, fragment_size, messages.as_slice()).await;
         server_send_done.send(()).unwrap();
     });
 
     let case: &'static str = Box::leak(String::from(case).into_boxed_str());
     let client_send_done = send_done.clone();
     let _client_handle = runtime.spawn(async move {
-        echo_client(addr, case).await;
+        echo_client(addr, fragment_size, case).await;
         client_send_done.send(()).unwrap();
     });
 
