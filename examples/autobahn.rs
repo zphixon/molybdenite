@@ -28,7 +28,11 @@ async fn case_count(host: &str) -> u32 {
     }
 }
 
-async fn run_test_client(case: u32, host: &str) -> Result<(), molybdenite::Error> {
+async fn run_test_client(
+    case: u32,
+    host: &str,
+    fragment_size: usize,
+) -> Result<(), molybdenite::Error> {
     let stream = BufStream::new(TcpStream::connect("localhost:9001").await.unwrap());
 
     let mut ws = molybdenite::WebSocket::client(
@@ -40,7 +44,7 @@ async fn run_test_client(case: u32, host: &str) -> Result<(), molybdenite::Error
         stream,
     )
     .unwrap();
-    ws.set_fragment_size(223);
+    ws.set_fragment_size(fragment_size);
     ws.client_handshake().await?;
 
     while let Ok(msg) = ws.read().await {
@@ -63,12 +67,13 @@ async fn run_test_client(case: u32, host: &str) -> Result<(), molybdenite::Error
     Ok(())
 }
 
-async fn run_test_server(bind: SocketAddr) -> Result<(), molybdenite::Error> {
+async fn run_test_server(bind: SocketAddr, fragment_size: usize) -> Result<(), molybdenite::Error> {
     let listener = TcpListener::bind(bind).await?;
 
     loop {
         let (stream, _) = listener.accept().await?;
         let mut ws = molybdenite::WebSocket::server(false, BufStream::new(stream));
+        ws.set_fragment_size(fragment_size);
         ws.server_handshake().await?;
 
         tokio::spawn(async move {
@@ -106,10 +111,16 @@ async fn update_reports() {
 }
 
 #[derive(argh::FromArgs)]
-#[argh(description = "")]
+#[argh(description = "autobahn test suite driver")]
 struct Args {
-    #[argh(subcommand, description = "a")]
+    #[argh(subcommand, description = "role that we should be testing")]
     role: Role,
+    #[argh(
+        option,
+        description = "size that payloads should be fragmented into",
+        default = "molybdenite::DEFAULT_FRAGMENT_SIZE"
+    )]
+    fragment_size: usize,
 }
 
 #[derive(argh::FromArgs)]
@@ -165,13 +176,13 @@ async fn main() {
 
     match args.role {
         Role::Serve(Serve { bind }) => {
-            run_test_server(bind).await.unwrap();
+            run_test_server(bind, args.fragment_size).await.unwrap();
             update_reports().await;
         }
 
         Role::Request(Request { host, case }) => {
             if let Some(case) = case {
-                let result = run_test_client(case, &host).await;
+                let result = run_test_client(case, &host, args.fragment_size).await;
                 update_reports().await;
                 result.unwrap();
                 return;
@@ -180,7 +191,7 @@ async fn main() {
             let case_count = case_count(&host).await;
 
             for case in 1..=case_count {
-                if let Err(err) = run_test_client(case, &host).await {
+                if let Err(err) = run_test_client(case, &host, args.fragment_size).await {
                     println!("error on case {}: {}", case, err);
                 }
             }

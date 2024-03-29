@@ -42,7 +42,11 @@ async fn echo_client(addr: &str, fragment_size: usize, case: &str) {
     ws.close().await.unwrap();
 }
 
-async fn expect_echo(ws: &mut WebSocket<TcpStream>, fragment_size: usize, messages: &[MessageRef<'_>]) {
+async fn expect_echo(
+    ws: &mut WebSocket<TcpStream>,
+    fragment_size: usize,
+    messages: &[MessageRef<'_>],
+) {
     ws.set_fragment_size(fragment_size);
     for message in messages {
         ws.write(*message).await.unwrap();
