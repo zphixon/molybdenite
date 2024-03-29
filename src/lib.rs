@@ -143,7 +143,7 @@ impl Error {
 }
 
 /// The value from a close message
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Close {
     bytes: Vec<u8>,
 }
@@ -173,7 +173,7 @@ impl From<getrandom::Error> for Error {
 /// Used to prevent needless data copying (other than what is necessary to write
 /// it over a stream). A type implementing [`AsMessageRef`] is passed to
 /// [`WebSocket::write`], this may be `MessageRef` or [`Message`].
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MessageRef<'data> {
     /// A (UTF-8) text message
     Text(&'data str),
@@ -270,6 +270,14 @@ impl<'data> MessageRef<'data> {
     pub fn is_close(&self) -> bool {
         matches!(self, MessageRef::Close(_))
     }
+
+    /// Transform a [`MessageRef::Ping`] into [`MessageRef::Pong`]
+    pub fn pong(&self) -> Self {
+        match self {
+            MessageRef::Ping(data) => MessageRef::Pong(data),
+            _ => *self,
+        }
+    }
 }
 
 /// An owned websocket message
@@ -347,23 +355,28 @@ impl Message {
     pub fn is_close(&self) -> bool {
         self.as_ref().is_close()
     }
+
+    /// Transform a [`Message::Ping`] into [`MessageRef::Pong`]
+    pub fn pong(&self) -> MessageRef {
+        self.as_ref().pong()
+    }
 }
 
 /// Create a [`MessageRef`] from a type
 pub trait AsMessageRef<'data> {
     /// Create the [`MessageRef`]
-    fn as_message_ref(&self) -> MessageRef<'data>;
+    fn as_message_ref(self) -> MessageRef<'data>;
 }
 
 impl<'data> AsMessageRef<'data> for &'data Message {
-    fn as_message_ref(&self) -> MessageRef<'data> {
+    fn as_message_ref(self) -> MessageRef<'data> {
         self.as_ref()
     }
 }
 
 impl<'data> AsMessageRef<'data> for MessageRef<'data> {
-    fn as_message_ref(&self) -> MessageRef<'data> {
-        *self
+    fn as_message_ref(self) -> MessageRef<'data> {
+        self
     }
 }
 
