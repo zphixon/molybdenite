@@ -245,6 +245,7 @@ enum State {
 
 pub const DEFAULT_MAX_HANDSHAKE_LEN: usize = 8192;
 pub const DEFAULT_MAX_PAYLOAD_LEN: usize = 0x0fffffff;
+pub const DEFAULT_FRAGMENT_SIZE: usize = DEFAULT_MAX_PAYLOAD_LEN;
 
 pub struct WebSocket<Stream> {
     stream: FrameStream<Stream>,
@@ -253,6 +254,7 @@ pub struct WebSocket<Stream> {
     state: State,
     max_handshake_len: usize,
     max_payload_len: usize,
+    fragment_size: usize,
 }
 
 impl<Stream> WebSocket<Stream>
@@ -275,6 +277,13 @@ where
         self.max_payload_len = max_payload_len;
     }
 
+    pub fn set_fragment_size(&mut self, fragment_size: usize) {
+        if fragment_size == 0 {
+            panic!("Cannot have zero fragment size");
+        }
+        self.fragment_size = fragment_size;
+    }
+
     pub fn server(secure: bool, stream: Stream) -> Self {
         WebSocket {
             stream: FrameStream::new(BufStream::new(stream), None),
@@ -283,6 +292,7 @@ where
             state: State::NoHandshake,
             max_handshake_len: DEFAULT_MAX_HANDSHAKE_LEN,
             max_payload_len: DEFAULT_MAX_PAYLOAD_LEN,
+            fragment_size: DEFAULT_FRAGMENT_SIZE,
         }
     }
 
@@ -300,6 +310,7 @@ where
             state: State::NoHandshake,
             max_handshake_len: DEFAULT_MAX_HANDSHAKE_LEN,
             max_payload_len: DEFAULT_MAX_PAYLOAD_LEN,
+            fragment_size: DEFAULT_FRAGMENT_SIZE,
         })
     }
 
@@ -473,7 +484,7 @@ where
         }
 
         let message = message.into_message_ref();
-        self.stream.write_message(message).await
+        self.stream.write_message(message, self.fragment_size).await
     }
 
     pub async fn flush(&mut self) -> Result<(), Error> {

@@ -162,11 +162,51 @@ where
     }
 
     /// not cancellation safe
-    pub async fn write_message(&mut self, message: MessageRef<'_>) -> Result<(), Error> {
-        let payload = message.payload();
-        self.stream
-            .write_u16(first_short(message.opcode(), self.mask_key, payload))
+    pub async fn write_message(
+        &mut self,
+        message: MessageRef<'_>,
+        fragment_size: usize,
+    ) -> Result<(), Error> {
+        // Number of frames that need to be written = ceil(len / frag_size)
+        let must_write = (message.payload().len() as f32 / fragment_size as f32).ceil() as usize;
+        if must_write <= 1 || message.opcode().is_control() {
+            // We only need one, or it's a control frame which cannot be fragmented
+            self.write_frame(
+                first_short(message.opcode(), self.mask_key, message.payload()),
+                message.payload(),
+            )
             .await?;
+            return Ok(());
+        }
+
+        let mut start = 0;
+        let mut written = 0;
+        while written < must_write {
+            let partial_payload =
+                &message.payload()[start..(start + fragment_size).min(message.payload().len())];
+
+            let first_short = if written == 0 {
+                // First frame is normal opcode and !FIN
+                first_short(message.opcode(), self.mask_key, partial_payload) & !FIN
+            } else if written + 1 != must_write {
+                // Frames between first and last are continuation and !FIN
+                first_short(Opcode::Continuation, self.mask_key, partial_payload) & !FIN
+            } else {
+                // Last frame is continuation and FIN
+                first_short(Opcode::Continuation, self.mask_key, partial_payload)
+            };
+
+            self.write_frame(first_short, partial_payload).await?;
+            start += fragment_size;
+            written += 1;
+        }
+
+        Ok(())
+    }
+
+    /// not cancellation safe
+    async fn write_frame(&mut self, first_short: u16, payload: &[u8]) -> Result<(), Error> {
+        self.stream.write_u16(first_short).await?;
 
         if payload.len() <= SMALL_PAYLOAD_USIZE {
             // :)

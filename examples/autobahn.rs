@@ -40,6 +40,7 @@ async fn run_test_client(case: u32, host: &str) -> Result<(), molybdenite::Error
         stream,
     )
     .unwrap();
+    ws.set_fragment_size(223);
     ws.connect().await?;
 
     while let Ok(msg) = ws.read().await {
