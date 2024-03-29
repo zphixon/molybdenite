@@ -40,6 +40,7 @@ async fn read_utf8_until(
         if !receiver.valid {
             return Err(Error::Utf8(Utf8Error::Handshake));
         }
+        // TODO: error if > max len?
         if receiver.string.len() > max_len || receiver.string.ends_with(until) {
             break;
         }
