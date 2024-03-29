@@ -58,7 +58,6 @@ async fn run_test_client(case: u32, host: &str) -> Result<(), molybdenite::Error
     }
 
     ws.close().await?;
-    ws.flush().await?;
 
     Ok(())
 }

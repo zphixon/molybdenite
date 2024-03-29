@@ -145,9 +145,9 @@ where
     }
 
     /// cancellation safe
-    pub async fn read_frame(&mut self) -> Result<Option<Frame>, Error> {
+    pub async fn read_frame(&mut self, max_len: usize) -> Result<Option<Frame>, Error> {
         loop {
-            if let Some(frame) = parse_frame(&mut self.buffer)? {
+            if let Some(frame) = parse_frame(&mut self.buffer, max_len)? {
                 return Ok(Some(frame));
             }
 
@@ -207,7 +207,7 @@ where
     }
 }
 
-pub fn parse_frame(buffer: &mut BytesMut) -> Result<Option<Frame>, Error> {
+pub fn parse_frame(buffer: &mut BytesMut, max_len: usize) -> Result<Option<Frame>, Error> {
     if buffer.len() < FIRST_SHORT_SIZE {
         return Ok(None);
     }
@@ -271,7 +271,7 @@ pub fn parse_frame(buffer: &mut BytesMut) -> Result<Option<Frame>, Error> {
     } else {
         None
     };
-    if payload_len > usize::MAX as u64 {
+    if payload_len > max_len as u64 {
         return Err(Error::Frame(FrameError::FramePayloadTooLong));
     }
     let frame_size = header_size

@@ -30,10 +30,13 @@ pub enum Error {
     WasClosed,
     #[error("Called `connect` on a server, or `accept` on a client")]
     IncorrectRole,
+    #[error("A handshake has not yet occurred on this websocket")]
+    NoHandshake,
     #[error("This is a bug 😭 {0}")]
     Bug(&'static str),
 }
 
+#[non_exhaustive]
 #[derive(Debug, Error)]
 pub enum Utf8Error {
     #[error("Close reason")]
@@ -46,6 +49,7 @@ pub enum Utf8Error {
     Handshake,
 }
 
+#[non_exhaustive]
 #[derive(Debug, Error)]
 pub enum FrameError {
     #[error("Reserved opcode")]
@@ -68,6 +72,7 @@ pub enum FrameError {
     UnexpectedOpcodePartialRead,
 }
 
+#[non_exhaustive]
 #[derive(Debug, Error)]
 pub enum HandshakeError {
     #[error("Invalid request: {0}")]
@@ -164,6 +169,45 @@ impl Message {
             Message::Close(close) => MessageRef::Close(close.as_ref()),
         }
     }
+
+    pub fn as_str(&self) -> Result<&str, Error> {
+        match self {
+            Message::Text(text) => Ok(text.as_str()),
+            Message::Binary(data) | Message::Ping(data) | Message::Pong(data) => {
+                std::str::from_utf8(data.as_slice())
+                    .map_err(|_| Error::Utf8(Utf8Error::TextMessage))
+            }
+            Message::Close(Some(close)) => close.reason(),
+            Message::Close(None) => Ok(""),
+        }
+    }
+
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            Message::Text(text) => Some(text.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn is_text(&self) -> bool {
+        matches!(self, Message::Text(_))
+    }
+
+    pub fn is_binary(&self) -> bool {
+        matches!(self, Message::Binary(_))
+    }
+
+    pub fn is_ping(&self) -> bool {
+        matches!(self, Message::Ping(_))
+    }
+
+    pub fn is_pong(&self) -> bool {
+        matches!(self, Message::Pong(_))
+    }
+
+    pub fn is_close(&self) -> bool {
+        matches!(self, Message::Close(_))
+    }
 }
 
 pub trait AsMessageRef<'data> {
@@ -191,6 +235,7 @@ pub enum Role {
 #[derive(Debug)]
 enum State {
     Closed,
+    NoHandshake,
     Open,
     PartialRead {
         first_opcode: Opcode,
@@ -198,11 +243,16 @@ enum State {
     },
 }
 
+pub const DEFAULT_MAX_HANDSHAKE_LEN: usize = 8192;
+pub const DEFAULT_MAX_PAYLOAD_LEN: usize = 0x0fffffff;
+
 pub struct WebSocket<Stream> {
     stream: FrameStream<Stream>,
     secure: bool,
     role: Role,
     state: State,
+    max_handshake_len: usize,
+    max_payload_len: usize,
 }
 
 impl<Stream> WebSocket<Stream>
@@ -217,12 +267,22 @@ where
         &self.role
     }
 
+    pub fn set_max_handshake_len(&mut self, max_handshake_len: usize) {
+        self.max_handshake_len = max_handshake_len;
+    }
+
+    pub fn set_max_payload_len(&mut self, max_payload_len: usize) {
+        self.max_payload_len = max_payload_len;
+    }
+
     pub fn server(secure: bool, stream: Stream) -> Self {
         WebSocket {
             stream: FrameStream::new(BufStream::new(stream), None),
             secure,
             role: Role::Server,
-            state: State::Open,
+            state: State::NoHandshake,
+            max_handshake_len: DEFAULT_MAX_HANDSHAKE_LEN,
+            max_payload_len: DEFAULT_MAX_PAYLOAD_LEN,
         }
     }
 
@@ -237,27 +297,43 @@ where
             stream: FrameStream::new(BufStream::new(stream), Some(mask_key)),
             secure,
             role: Role::Client { url },
-            state: State::Open,
+            state: State::NoHandshake,
+            max_handshake_len: DEFAULT_MAX_HANDSHAKE_LEN,
+            max_payload_len: DEFAULT_MAX_PAYLOAD_LEN,
         })
+    }
+
+    pub fn pinkie_promise_handshake(&mut self) {
+        self.state = State::Open;
     }
 
     pub async fn accept(&mut self) -> Result<Url, Error> {
         match &self.role {
             Role::Client { .. } => Err(Error::IncorrectRole),
-            Role::Server => handshake::server(self.stream.inner_mut(), self.secure).await,
+            Role::Server => {
+                let url =
+                    handshake::server(self.stream.inner_mut(), self.secure, self.max_handshake_len)
+                        .await?;
+                self.state = State::Open;
+                Ok(url)
+            }
         }
     }
 
     pub async fn connect(&mut self) -> Result<(), Error> {
         match &self.role {
-            Role::Client { url } => handshake::client(url, self.stream.inner_mut()).await,
+            Role::Client { url } => {
+                handshake::client(url, self.stream.inner_mut(), self.max_handshake_len).await?;
+                self.state = State::Open;
+                Ok(())
+            }
             Role::Server => Err(Error::IncorrectRole),
         }
     }
 
     /// cancellation safe
     async fn next_frame(&mut self) -> Result<Frame, Error> {
-        match self.stream.read_frame().await? {
+        match self.stream.read_frame(self.max_payload_len).await? {
             Some(frame) => Ok(frame),
             None => {
                 self.state = State::Closed;
@@ -278,6 +354,7 @@ where
 
         match self.state {
             State::Closed => Err(Error::WasClosed),
+            State::NoHandshake => Err(Error::NoHandshake),
 
             State::Open => {
                 let frame = self.next_frame().await?;
@@ -389,16 +466,34 @@ where
 
     /// not cancellation safe
     pub async fn write<'data>(&mut self, message: impl AsMessageRef<'data>) -> Result<(), Error> {
+        match &self.state {
+            State::Closed => return Err(Error::WasClosed),
+            State::NoHandshake => return Err(Error::NoHandshake),
+            _ => {}
+        }
+
         let message = message.into_message_ref();
         self.stream.write_message(message).await
     }
 
     pub async fn flush(&mut self) -> Result<(), Error> {
+        match &self.state {
+            State::Closed => return Err(Error::WasClosed),
+            State::NoHandshake => return Err(Error::NoHandshake),
+            _ => {}
+        }
+
         self.stream.flush().await
     }
 
     /// not cancellation safe
     pub async fn close(&mut self) -> Result<(), Error> {
+        match &self.state {
+            State::Closed => return Err(Error::WasClosed),
+            State::NoHandshake => return Err(Error::NoHandshake),
+            _ => {}
+        }
+
         self.stream.write_close().await?;
         self.flush().await
     }

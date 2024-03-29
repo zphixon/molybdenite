@@ -25,6 +25,7 @@ impl utf8parse::Receiver for CodepointReceiver {
 
 async fn read_utf8_until(
     stream: &mut BufStream<impl AsyncRead + AsyncWrite + Unpin>,
+    max_len: usize,
     until: &'static str,
 ) -> Result<String, Error> {
     let mut parser = utf8parse::Parser::new();
@@ -39,7 +40,7 @@ async fn read_utf8_until(
         if !receiver.valid {
             return Err(Error::Utf8(Utf8Error::Handshake));
         }
-        if receiver.string.len() > 32767 || receiver.string.ends_with(until) {
+        if receiver.string.len() > max_len || receiver.string.ends_with(until) {
             break;
         }
     }
@@ -49,8 +50,9 @@ async fn read_utf8_until(
 
 async fn read_headers(
     stream: &mut BufStream<impl AsyncRead + AsyncWrite + Unpin>,
+    max_len: usize,
 ) -> Result<HashMap<String, String>, Error> {
-    let headers_str = read_utf8_until(stream, "\r\n\r\n").await?;
+    let headers_str = read_utf8_until(stream, max_len, "\r\n\r\n").await?;
     let mut headers = HashMap::new();
 
     for line in headers_str.lines() {
@@ -80,8 +82,9 @@ async fn read_headers(
 pub async fn server(
     stream: &mut BufStream<impl AsyncRead + AsyncWrite + Unpin>,
     secure: bool,
+    max_len: usize,
 ) -> Result<Url, Error> {
-    let request_line = read_utf8_until(stream, "\n").await?;
+    let request_line = read_utf8_until(stream, max_len, "\n").await?;
     let mut split = request_line.split_ascii_whitespace();
     let (Some("GET"), Some(got_request_path), Some("HTTP/1.1")) =
         (split.next(), split.next(), split.next())
@@ -92,7 +95,7 @@ pub async fn server(
     };
     let request_path = String::from(got_request_path);
 
-    let headers = read_headers(stream).await?;
+    let headers = read_headers(stream, max_len).await?;
 
     let Some(host) = headers.get("host") else {
         return Err(Error::Handshake(HandshakeError::MissingOrInvalidHeader(
@@ -172,6 +175,7 @@ pub async fn server(
 pub async fn client(
     url: &Url,
     stream: &mut BufStream<impl AsyncRead + AsyncWrite + Unpin>,
+    max_len: usize,
 ) -> Result<(), Error> {
     let ("ws" | "wss") = url.scheme() else {
         return Err(Error::Handshake(HandshakeError::IncorrectScheme(
@@ -210,7 +214,7 @@ pub async fn client(
     stream.write_all(request.as_bytes()).await?;
     stream.flush().await?;
 
-    let response_line_string = read_utf8_until(stream, "\n").await?;
+    let response_line_string = read_utf8_until(stream, max_len, "\n").await?;
     let response_line = response_line_string.trim();
     if response_line != SWITCHING_PROTOCOLS {
         return Err(Error::Handshake(HandshakeError::UnexpectedResponse(
@@ -218,7 +222,7 @@ pub async fn client(
         )));
     }
 
-    let headers = read_headers(stream).await?;
+    let headers = read_headers(stream, max_len).await?;
 
     let expect_sec_websocket_accept_bytes =
         Sha1::from(format!("{}{}", key_base64, SEC_WEBSOCKET_ACCEPT_UUID))
