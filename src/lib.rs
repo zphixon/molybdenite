@@ -28,6 +28,8 @@ pub enum Error {
     Frame(FrameError),
     #[error("Tried to send or receive on a closed websocket")]
     WasClosed,
+    #[error("Called `connect` on a server, or `accept` on a client")]
+    IncorrectRole,
     #[error("This is a bug 😭 {0}")]
     Bug(&'static str),
 }
@@ -180,9 +182,9 @@ impl<'data> AsMessageRef<'data> for MessageRef<'data> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum Role {
-    Client,
+    Client { url: Url },
     Server,
 }
 
@@ -197,7 +199,7 @@ enum State {
 }
 
 pub struct WebSocket<Stream> {
-    stream: FrameStream<BufStream<Stream>>,
+    stream: FrameStream<Stream>,
     secure: bool,
     role: Role,
     state: State,
@@ -211,38 +213,20 @@ where
         self.secure
     }
 
-    pub fn role(&self) -> Role {
-        self.role
+    pub fn role(&self) -> &Role {
+        &self.role
     }
 
-    pub async fn accept(secure: bool, stream: Stream) -> Result<(Self, Url), Error> {
-        let mut stream = BufStream::new(stream);
-        let request_url = handshake::server(&mut stream, secure).await?;
-        Ok((
-            Self::accept_no_handshake(secure, stream).await?,
-            request_url,
-        ))
-    }
-
-    pub async fn accept_no_handshake(
-        secure: bool,
-        stream: BufStream<Stream>,
-    ) -> Result<Self, Error> {
-        Ok(WebSocket {
-            stream: FrameStream::new(stream, None),
+    pub fn server(secure: bool, stream: Stream) -> Self {
+        WebSocket {
+            stream: FrameStream::new(BufStream::new(stream), None),
             secure,
             role: Role::Server,
             state: State::Open,
-        })
+        }
     }
 
-    pub async fn connect(url: &Url, stream: Stream) -> Result<Self, Error> {
-        let mut stream = BufStream::new(stream);
-        handshake::client(url, &mut stream).await?;
-        Self::connect_no_handshake(url, stream).await
-    }
-
-    pub async fn connect_no_handshake(url: &Url, stream: BufStream<Stream>) -> Result<Self, Error> {
+    pub fn client(url: Url, stream: Stream) -> Result<Self, Error> {
         let secure = url.scheme() == "wss";
 
         let mut mask_bytes = [0u8; 4];
@@ -250,11 +234,25 @@ where
         let mask_key = u32::from_le_bytes(mask_bytes);
 
         Ok(WebSocket {
-            stream: FrameStream::new(stream, Some(mask_key)),
+            stream: FrameStream::new(BufStream::new(stream), Some(mask_key)),
             secure,
-            role: Role::Client,
+            role: Role::Client { url },
             state: State::Open,
         })
+    }
+
+    pub async fn accept(&mut self) -> Result<Url, Error> {
+        match &self.role {
+            Role::Client { .. } => Err(Error::IncorrectRole),
+            Role::Server => handshake::server(self.stream.inner_mut(), self.secure).await,
+        }
+    }
+
+    pub async fn connect(&mut self) -> Result<(), Error> {
+        match &self.role {
+            Role::Client { url } => handshake::client(url, self.stream.inner_mut()).await,
+            Role::Server => Err(Error::IncorrectRole),
+        }
     }
 
     /// cancellation safe

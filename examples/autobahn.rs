@@ -8,12 +8,12 @@ use url::Url;
 async fn case_count(host: &str) -> u32 {
     let stream = BufStream::new(TcpStream::connect("localhost:9001").await.unwrap());
 
-    let mut ws = molybdenite::WebSocket::connect(
-        &Url::parse(&format!("ws://{}/getCaseCount", host)).unwrap(),
+    let mut ws = molybdenite::WebSocket::client(
+        Url::parse(&format!("ws://{}/getCaseCount", host)).unwrap(),
         stream,
     )
-    .await
     .unwrap();
+    ws.connect().await.unwrap();
 
     let msg = ws.read().await.unwrap();
 
@@ -31,16 +31,16 @@ async fn case_count(host: &str) -> u32 {
 async fn run_test_client(case: u32, host: &str) -> Result<(), molybdenite::Error> {
     let stream = BufStream::new(TcpStream::connect("localhost:9001").await.unwrap());
 
-    let mut ws = molybdenite::WebSocket::connect(
-        &Url::parse(&format!(
+    let mut ws = molybdenite::WebSocket::client(
+        Url::parse(&format!(
             "ws://{}/runCase?case={}&agent=molybdenite",
             host, case
         ))
         .unwrap(),
         stream,
     )
-    .await
     .unwrap();
+    ws.connect().await?;
 
     while let Ok(msg) = ws.read().await {
         match msg {
@@ -68,9 +68,8 @@ async fn run_test_server(bind: SocketAddr) -> Result<(), molybdenite::Error> {
 
     loop {
         let (stream, _) = listener.accept().await?;
-        let (mut ws, _request) = molybdenite::WebSocket::accept(false, BufStream::new(stream))
-            .await
-            .unwrap();
+        let mut ws = molybdenite::WebSocket::server(false, BufStream::new(stream));
+        ws.accept().await?;
 
         tokio::spawn(async move {
             while let Ok(msg) = ws.read().await {
@@ -96,12 +95,12 @@ async fn run_test_server(bind: SocketAddr) -> Result<(), molybdenite::Error> {
 async fn update_reports() {
     let stream = BufStream::new(TcpStream::connect("localhost:9001").await.unwrap());
 
-    let mut ws = molybdenite::WebSocket::connect(
-        &Url::parse("ws://localhost:9001/updateReports?agent=molybdenite").unwrap(),
+    let mut ws = molybdenite::WebSocket::client(
+        Url::parse("ws://localhost:9001/updateReports?agent=molybdenite").unwrap(),
         stream,
     )
-    .await
     .unwrap();
+    ws.connect().await.unwrap();
 
     ws.close().await.unwrap();
 }

@@ -1,7 +1,7 @@
 use crate::{Error, FrameError, MessageRef};
 use bytes::BytesMut;
 use std::mem::size_of;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufStream};
 
 pub const FIN: u16 = 0b1000_0000_0000_0000;
 pub const RSV1: u16 = 0b0100_0000_0000_0000;
@@ -118,7 +118,7 @@ impl Frame {
 }
 
 pub struct FrameStream<Stream> {
-    stream: BufWriter<Stream>,
+    stream: BufStream<Stream>,
     buffer: BytesMut,
     mask_key: Option<u32>,
 }
@@ -127,9 +127,13 @@ impl<Stream> FrameStream<Stream>
 where
     Stream: AsyncRead + AsyncWrite + Unpin,
 {
-    pub fn new(stream: Stream, mask_key: Option<u32>) -> Self {
+    pub fn inner_mut(&mut self) -> &mut BufStream<Stream> {
+        &mut self.stream
+    }
+
+    pub fn new(stream: BufStream<Stream>, mask_key: Option<u32>) -> Self {
         FrameStream {
-            stream: BufWriter::new(stream),
+            stream,
             buffer: BytesMut::with_capacity(4096),
             mask_key,
         }
