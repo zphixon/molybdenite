@@ -55,7 +55,7 @@ struct Request {
 
 async fn do_client(request: Url, stream: impl AsyncRead + AsyncWrite + Unpin) -> Result<()> {
     let mut ws = molybdenite::WebSocket::client(request, stream)?;
-    ws.connect().await?;
+    ws.client_handshake().await?;
 
     loop {
         match ws.read().await {
@@ -78,7 +78,7 @@ async fn do_client(request: Url, stream: impl AsyncRead + AsyncWrite + Unpin) ->
 
 async fn do_server(stream: impl AsyncRead + AsyncWrite + Unpin, secure: bool) -> Result<()> {
     let mut ws = molybdenite::WebSocket::server(secure, stream);
-    let request = ws.accept().await?;
+    let request = ws.server_handshake().await?;
     println!("request was {}", request);
 
     ws.write(molybdenite::MessageRef::Text("dumptydonkeydooby"))

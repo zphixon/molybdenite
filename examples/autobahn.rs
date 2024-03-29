@@ -13,7 +13,7 @@ async fn case_count(host: &str) -> u32 {
         stream,
     )
     .unwrap();
-    ws.connect().await.unwrap();
+    ws.client_handshake().await.unwrap();
 
     let msg = ws.read().await.unwrap();
 
@@ -41,7 +41,7 @@ async fn run_test_client(case: u32, host: &str) -> Result<(), molybdenite::Error
     )
     .unwrap();
     ws.set_fragment_size(223);
-    ws.connect().await?;
+    ws.client_handshake().await?;
 
     while let Ok(msg) = ws.read().await {
         match msg {
@@ -69,7 +69,7 @@ async fn run_test_server(bind: SocketAddr) -> Result<(), molybdenite::Error> {
     loop {
         let (stream, _) = listener.accept().await?;
         let mut ws = molybdenite::WebSocket::server(false, BufStream::new(stream));
-        ws.accept().await?;
+        ws.server_handshake().await?;
 
         tokio::spawn(async move {
             while let Ok(msg) = ws.read().await {
@@ -100,7 +100,7 @@ async fn update_reports() {
         stream,
     )
     .unwrap();
-    ws.connect().await.unwrap();
+    ws.client_handshake().await.unwrap();
 
     ws.close().await.unwrap();
 }

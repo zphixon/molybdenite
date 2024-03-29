@@ -39,11 +39,13 @@ pub enum Error {
     /// A websocket was closed
     #[error("Tried to send or receive on a closed websocket")]
     WasClosed,
-    /// Called [`WebSocket::connect`] on a server, or [`WebSocket::accept`] on a client
-    #[error("Called `connect` on a server, or `accept` on a client")]
+    /// Called [`WebSocket::client_handshake`] on a server, or
+    /// [`WebSocket::server_handshake`] on a client
+    #[error("Called `client_handshake` on a server, or `server_handshake` on a client")]
     IncorrectRole,
-    /// A handshake has not carried out yet. Call [`WebSocket::connect`] or
-    /// [`WebSocket::accept`] to do a handshake.
+    /// A handshake has not carried out yet. Call
+    /// [`WebSocket::client_handshake`] or [`WebSocket::server_handshake`] to do
+    /// a handshake
     #[error("A handshake has not yet occurred on this websocket")]
     NoHandshake,
     #[doc(hidden)]
@@ -371,7 +373,8 @@ pub enum Role {
     /// The client
     ///
     /// If the role of a [`WebSocket`] is [`Role::Client`], calling
-    /// [`WebSocket::connect`] with a URL will begin a websocket handshake.
+    /// [`WebSocket::client_handshake`] with a URL will begin a websocket
+    /// handshake.
     Client {
         /// The URL of the request made in [`WebSocket::client`]
         url: Url,
@@ -379,8 +382,8 @@ pub enum Role {
     /// The server
     ///
     /// If the role of a [`WebSocket`] is [`Role::Server`], calling
-    /// [`WebSocket::accept`] will listen for a websocket handshake, and return
-    /// the URL requested by the client.
+    /// [`WebSocket::server_handshake`] will listen for a websocket handshake,
+    /// and return the URL requested by the client.
     Server,
 }
 
@@ -417,8 +420,8 @@ pub const DEFAULT_FRAGMENT_SIZE: usize = DEFAULT_MAX_PAYLOAD_LEN;
 /// A websocket
 ///
 /// To get a websocket connection up and running, call [`WebSocket::server`]
-/// then [`WebSocket::accept`], or [`WebSocket::client`] then
-/// [`WebSocket::connect`] to start sending and receiving [`Message`]s.
+/// then [`WebSocket::server_handshake`], or [`WebSocket::client`] then
+/// [`WebSocket::client_handshake`] to start sending and receiving [`Message`]s.
 pub struct WebSocket<Stream> {
     stream: FrameStream<Stream>,
     secure: bool,
@@ -478,8 +481,8 @@ where
     /// Create a websocket with a [`Role::Server`] role
     ///
     /// This function does not listen for a handshake. Call
-    /// [`WebSocket::accept`] to wait for one. Forgetting to do this will cause
-    /// [`WebSocket::read`] and [`WebSocket::write`] to return
+    /// [`WebSocket::server_handshake`] to wait for one. Forgetting to do this
+    /// will cause [`WebSocket::read`] and [`WebSocket::write`] to return
     /// [`Error::NoHandshake`].
     pub fn server(secure: bool, stream: Stream) -> Self {
         WebSocket {
@@ -496,9 +499,9 @@ where
     /// Create a websocket with a [`Role::Client`] role
     ///
     /// This function does not listen for a handshake. Call
-    /// [`WebSocket::connect`] and provide a URL to initiate one. Forgetting to
-    /// do this will cause [`WebSocket::read`] and [`WebSocket::write`] to
-    /// return [`Error::NoHandshake`].
+    /// [`WebSocket::client_handshake`] and provide a URL to initiate one.
+    /// Forgetting to do this will cause [`WebSocket::read`] and
+    /// [`WebSocket::write`] to return [`Error::NoHandshake`].
     pub fn client(url: Url, stream: Stream) -> Result<Self, Error> {
         let secure = url.scheme() == "wss";
 
@@ -517,11 +520,11 @@ where
         })
     }
 
-    /// Cross your heart and hope to die that you already did a handshake
+    /// Pinkie promise that you've already done a handshake
     ///
     /// If you've already done a handshake, call this method rather than
-    /// [`WebSocket::connect`] or [`WebSocket::accept`].
-    pub fn pinkie_promise_handshake(&mut self) {
+    /// [`WebSocket::client_handshake`] or [`WebSocket::server_handshake`].
+    pub fn skip_handshake(&mut self) {
         self.state = State::Open;
     }
 
@@ -530,7 +533,7 @@ where
     /// A websocket with a role [`Role::Server`] will return the reqeusted URL
     /// from a client that makes a connection. A websocket with a role
     /// [`Role::Client`] will return [`Error::IncorrectRole`].
-    pub async fn accept(&mut self) -> Result<Url, Error> {
+    pub async fn server_handshake(&mut self) -> Result<Url, Error> {
         match &self.role {
             Role::Client { .. } => Err(Error::IncorrectRole),
             Role::Server => {
@@ -548,7 +551,7 @@ where
     /// A websocket with a role [`Role::Client`] will initiate a handshake with
     /// the URL passed to [`WebSocket::client`].  A websocket with a role
     /// [`Role::Server`] will return [`Error::IncorrectRole`].
-    pub async fn connect(&mut self) -> Result<(), Error> {
+    pub async fn client_handshake(&mut self) -> Result<(), Error> {
         match &self.role {
             Role::Client { url } => {
                 handshake::client(url, self.stream.inner_mut(), self.max_handshake_len).await?;
