@@ -1,4 +1,4 @@
-use crate::{Error, FrameError, MessageRef};
+use crate::{Error, FrameError, Message, MessageRef};
 use bytes::BytesMut;
 use std::mem::size_of;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufStream};
@@ -35,6 +35,14 @@ pub enum Opcode {
 impl Opcode {
     fn is_control(&self) -> bool {
         matches!(self, Opcode::Close | Opcode::Ping | Opcode::Pong)
+    }
+
+    pub fn ping_pong_message(&self, payload: Vec<u8>) -> Result<Message, Error> {
+        match self {
+            Opcode::Ping => Ok(Message::Ping(payload)),
+            Opcode::Pong => Ok(Message::Pong(payload)),
+            _ => Err(Error::Bug("ping pong opcode not ping or pong?")),
+        }
     }
 }
 

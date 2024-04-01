@@ -1,4 +1,4 @@
-use molybdenite::{AsMessageRef, Message, MessageRef, WebSocket};
+use molybdenite::{AsMessageRef, Error, FrameError, Message, MessageRef, WebSocket};
 use std::{
     sync::atomic::{AtomicU16, Ordering},
     time::Duration,
@@ -9,6 +9,8 @@ use tokio::{
 };
 use url::Url;
 
+// is there a better way?
+const TIMEOUT: u64 = 1000;
 const TEXT: &str = "dumpty yikes dumpty donkey dooby donkey";
 static PORT: AtomicU16 = AtomicU16::new(9122);
 
@@ -138,8 +140,12 @@ fn single_text_message_then_close() {
         client_send_done.send(()).unwrap();
     });
 
-    recv_done.recv_timeout(Duration::from_millis(200)).unwrap();
-    recv_done.recv_timeout(Duration::from_millis(200)).unwrap();
+    recv_done
+        .recv_timeout(Duration::from_millis(TIMEOUT))
+        .unwrap();
+    recv_done
+        .recv_timeout(Duration::from_millis(TIMEOUT))
+        .unwrap();
 }
 
 #[test]
@@ -154,7 +160,9 @@ fn fragment_size_zero_panics() {
         ws.set_fragment_size(0);
         send_done.send(()).unwrap();
     });
-    recv_done.recv_timeout(Duration::from_millis(200)).unwrap();
+    recv_done
+        .recv_timeout(Duration::from_millis(TIMEOUT))
+        .unwrap();
 }
 
 #[test]
@@ -195,4 +203,292 @@ fn test_fragmented_echo() {
             );
         });
     });
+}
+
+#[test]
+fn max_payload_len() {
+    let addr = next_address();
+
+    let runtime = Runtime::new().unwrap();
+    let (send_done, recv_done) = std::sync::mpsc::channel();
+
+    let server_send_done = send_done.clone();
+    let _server_handle = runtime.spawn(async move {
+        let listener = TcpListener::bind(addr).await.unwrap();
+
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut ws = WebSocket::server(false, socket);
+
+        ws.server_handshake().await.unwrap();
+        ws.write(MessageRef::Text(TEXT)).await.unwrap();
+        ws.close().await.unwrap();
+        while !matches!(ws.read().await.unwrap(), Message::Close(_)) {}
+
+        server_send_done.send(()).unwrap();
+    });
+
+    let client_send_done = send_done.clone();
+    let _client_handle = runtime.spawn(async move {
+        let client = TcpStream::connect(addr).await.unwrap();
+        let mut ws =
+            WebSocket::client(ws_url(addr, "single text message then close"), client).unwrap();
+
+        ws.set_max_payload_len(5);
+
+        ws.client_handshake().await.unwrap();
+        assert!(matches!(
+            dbg!(ws.read().await),
+            Err(Error::Frame(FrameError::FramePayloadTooLong))
+        ));
+        ws.close().await.unwrap();
+
+        client_send_done.send(()).unwrap();
+    });
+
+    recv_done
+        .recv_timeout(Duration::from_millis(TIMEOUT))
+        .unwrap();
+    recv_done
+        .recv_timeout(Duration::from_millis(TIMEOUT))
+        .unwrap();
+}
+
+#[test]
+fn no_handshake() {
+    let addr = next_address();
+
+    let runtime = Runtime::new().unwrap();
+    let (send_done, recv_done) = std::sync::mpsc::channel();
+
+    let server_send_done = send_done.clone();
+    let _server_handle = runtime.spawn(async move {
+        let listener = TcpListener::bind(addr).await.unwrap();
+
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut ws = WebSocket::server(false, socket);
+
+        assert!(matches!(ws.read().await, Err(Error::NoHandshake)));
+        assert!(matches!(
+            ws.write(MessageRef::Text("")).await,
+            Err(Error::NoHandshake)
+        ));
+
+        ws.server_handshake().await.unwrap();
+        ws.write(MessageRef::Text(TEXT)).await.unwrap();
+        ws.close().await.unwrap();
+        while !matches!(ws.read().await.unwrap(), Message::Close(_)) {}
+
+        server_send_done.send(()).unwrap();
+    });
+
+    let client_send_done = send_done.clone();
+    let _client_handle = runtime.spawn(async move {
+        let client = TcpStream::connect(addr).await.unwrap();
+        let mut ws =
+            WebSocket::client(ws_url(addr, "single text message then close"), client).unwrap();
+
+        assert!(matches!(ws.read().await, Err(Error::NoHandshake)));
+        assert!(matches!(
+            ws.write(MessageRef::Text("")).await,
+            Err(Error::NoHandshake)
+        ));
+
+        ws.client_handshake().await.unwrap();
+        assert!(matches!(ws.read().await.unwrap(), Message::Text(text) if text == TEXT));
+        assert!(matches!(ws.read().await.unwrap(), Message::Close(None)));
+        ws.close().await.unwrap();
+
+        client_send_done.send(()).unwrap();
+    });
+
+    recv_done
+        .recv_timeout(Duration::from_millis(TIMEOUT))
+        .unwrap();
+    recv_done
+        .recv_timeout(Duration::from_millis(TIMEOUT))
+        .unwrap();
+}
+
+#[test]
+fn read_after_got_close() {
+    let addr = next_address();
+
+    let runtime = Runtime::new().unwrap();
+    let (send_done, recv_done) = std::sync::mpsc::channel();
+
+    let server_send_done = send_done.clone();
+    let _server_handle = runtime.spawn(async move {
+        let listener = TcpListener::bind(addr).await.unwrap();
+
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut ws = WebSocket::server(false, socket);
+
+        ws.server_handshake().await.unwrap();
+        ws.close().await.unwrap();
+        while !matches!(ws.read().await.unwrap(), Message::Close(_)) {}
+
+        server_send_done.send(()).unwrap();
+    });
+
+    let client_send_done = send_done.clone();
+    let _client_handle = runtime.spawn(async move {
+        let client = TcpStream::connect(addr).await.unwrap();
+        let mut ws =
+            WebSocket::client(ws_url(addr, "single text message then close"), client).unwrap();
+
+        ws.client_handshake().await.unwrap();
+
+        assert!(matches!(ws.read().await.unwrap(), Message::Close(None)));
+        assert!(matches!(ws.read().await, Err(Error::WasClosed)));
+
+        ws.close().await.unwrap();
+
+        client_send_done.send(()).unwrap();
+    });
+
+    recv_done
+        .recv_timeout(Duration::from_millis(TIMEOUT))
+        .unwrap();
+    recv_done
+        .recv_timeout(Duration::from_millis(TIMEOUT))
+        .unwrap();
+}
+
+#[test]
+fn write_after_got_close() {
+    let addr = next_address();
+
+    let runtime = Runtime::new().unwrap();
+    let (send_done, recv_done) = std::sync::mpsc::channel();
+
+    let server_send_done = send_done.clone();
+    let _server_handle = runtime.spawn(async move {
+        let listener = TcpListener::bind(addr).await.unwrap();
+
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut ws = WebSocket::server(false, socket);
+
+        ws.server_handshake().await.unwrap();
+        ws.close().await.unwrap();
+        while !matches!(ws.read().await.unwrap(), Message::Close(_)) {}
+
+        server_send_done.send(()).unwrap();
+    });
+
+    let client_send_done = send_done.clone();
+    let _client_handle = runtime.spawn(async move {
+        let client = TcpStream::connect(addr).await.unwrap();
+        let mut ws =
+            WebSocket::client(ws_url(addr, "single text message then close"), client).unwrap();
+
+        ws.client_handshake().await.unwrap();
+
+        assert!(matches!(ws.read().await.unwrap(), Message::Close(None)));
+        assert!(matches!(
+            ws.write(MessageRef::Text("")).await,
+            Err(Error::WasClosed)
+        ));
+
+        ws.close().await.unwrap();
+
+        client_send_done.send(()).unwrap();
+    });
+
+    recv_done
+        .recv_timeout(Duration::from_millis(TIMEOUT))
+        .unwrap();
+    recv_done
+        .recv_timeout(Duration::from_millis(TIMEOUT))
+        .unwrap();
+}
+
+#[test]
+fn read_after_sent_close() {
+    let addr = next_address();
+
+    let runtime = Runtime::new().unwrap();
+    let (send_done, recv_done) = std::sync::mpsc::channel();
+
+    let server_send_done = send_done.clone();
+    let _server_handle = runtime.spawn(async move {
+        let listener = TcpListener::bind(addr).await.unwrap();
+
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut ws = WebSocket::server(false, socket);
+
+        ws.server_handshake().await.unwrap();
+        ws.close().await.unwrap();
+        assert!(matches!(ws.read().await.unwrap(), Message::Text(text) if text == TEXT));
+        while !matches!(ws.read().await.unwrap(), Message::Close(_)) {}
+
+        server_send_done.send(()).unwrap();
+    });
+
+    let client_send_done = send_done.clone();
+    let _client_handle = runtime.spawn(async move {
+        let client = TcpStream::connect(addr).await.unwrap();
+        let mut ws =
+            WebSocket::client(ws_url(addr, "single text message then close"), client).unwrap();
+
+        ws.client_handshake().await.unwrap();
+        ws.write(MessageRef::Text(TEXT)).await.unwrap();
+        assert!(matches!(ws.read().await.unwrap(), Message::Close(None)));
+        ws.close().await.unwrap();
+
+        client_send_done.send(()).unwrap();
+    });
+
+    recv_done
+        .recv_timeout(Duration::from_millis(TIMEOUT))
+        .unwrap();
+    recv_done
+        .recv_timeout(Duration::from_millis(TIMEOUT))
+        .unwrap();
+}
+
+#[test]
+fn write_after_sent_close() {
+    let addr = next_address();
+
+    let runtime = Runtime::new().unwrap();
+    let (send_done, recv_done) = std::sync::mpsc::channel();
+
+    let server_send_done = send_done.clone();
+    let _server_handle = runtime.spawn(async move {
+        let listener = TcpListener::bind(addr).await.unwrap();
+
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut ws = WebSocket::server(false, socket);
+
+        ws.server_handshake().await.unwrap();
+        ws.write(MessageRef::Text(TEXT)).await.unwrap();
+        ws.close().await.unwrap();
+        assert!(matches!(
+            ws.write(MessageRef::Text("")).await,
+            Err(Error::WasClosed)
+        ));
+
+        server_send_done.send(()).unwrap();
+    });
+
+    let client_send_done = send_done.clone();
+    let _client_handle = runtime.spawn(async move {
+        let client = TcpStream::connect(addr).await.unwrap();
+        let mut ws =
+            WebSocket::client(ws_url(addr, "single text message then close"), client).unwrap();
+
+        ws.client_handshake().await.unwrap();
+        assert!(matches!(ws.read().await.unwrap(), Message::Text(text) if text == TEXT));
+        assert!(matches!(ws.read().await.unwrap(), Message::Close(None)));
+        ws.close().await.unwrap();
+
+        client_send_done.send(()).unwrap();
+    });
+
+    recv_done
+        .recv_timeout(Duration::from_millis(TIMEOUT))
+        .unwrap();
+    recv_done
+        .recv_timeout(Duration::from_millis(TIMEOUT))
+        .unwrap();
 }

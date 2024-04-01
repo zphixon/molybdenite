@@ -36,7 +36,7 @@ pub enum Error {
     /// A frame received was incorrect
     #[error("A frame was malformed: {0}")]
     Frame(FrameError),
-    /// A websocket was closed
+    /// Tried to send or receive on a closed websocket
     #[error("Tried to send or receive on a closed websocket")]
     WasClosed,
     /// Called [`WebSocket::client_handshake`] on a server, or
@@ -48,6 +48,12 @@ pub enum Error {
     /// a handshake
     #[error("A handshake has not yet occurred on this websocket")]
     NoHandshake,
+    /// A message was too large
+    #[error("A message was too large")]
+    MessageTooLarge,
+    /// The connection was closed without a closing handshake
+    #[error("Closed without closing handshake")]
+    ClosedWithoutHandshake,
     #[doc(hidden)]
     #[error("This is a bug 😭 {0}")]
     Bug(&'static str),
@@ -381,7 +387,7 @@ impl<'data> AsMessageRef<'data> for MessageRef<'data> {
 }
 
 /// A websocket role
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum Role {
     /// The client
     ///
@@ -401,19 +407,65 @@ pub enum Role {
 }
 
 /// State of a WebSocket instance
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 enum State {
-    /// No more messages allowed to be sent
-    Closed,
-    /// No handshake has taken place yet
+    /// No handshake has taken place yet - may not send or receive anything
     NoHandshake,
-    /// Ready for stuff
+    /// Open for communications - may send and receive any message
     Open,
-    /// Got a control frame between non-FIN frames
+    /// Fragmented message interrupted by Ping or Pong - may send and receive
+    /// any message
     PartialRead {
         first_opcode: Opcode,
         read_payload: Vec<u8>,
     },
+    /// Sent a close - may not send anything, may receive anything
+    OpenSentClose,
+    /// Fragmented message interrupted by Ping or Pong, and we've sent a Close
+    /// already - may not send anything, may receive anything
+    PartialReadSentClose {
+        first_opcode: Opcode,
+        read_payload: Vec<u8>,
+    },
+    /// Received a close from the other host - may only send Close, may not
+    /// receive anything
+    GotClose,
+    /// Got and sent closed - may not send or receive anything
+    FullyClosed,
+}
+
+impl State {
+    fn take_partial(&mut self) -> Result<(Opcode, Vec<u8>), Error> {
+        match self {
+            State::PartialRead { .. } => {
+                let State::PartialRead {
+                    first_opcode,
+                    read_payload,
+                } = std::mem::replace(self, State::Open)
+                else {
+                    unreachable!()
+                };
+                Ok((first_opcode, read_payload))
+            }
+
+            State::PartialReadSentClose { .. } => {
+                let State::PartialRead {
+                    first_opcode,
+                    read_payload,
+                } = std::mem::replace(self, State::OpenSentClose)
+                else {
+                    unreachable!()
+                };
+                Ok((first_opcode, read_payload))
+            }
+
+            State::OpenSentClose
+            | State::GotClose
+            | State::FullyClosed
+            | State::NoHandshake
+            | State::Open => Err(Error::Bug("take partial not partial")),
+        }
+    }
 }
 
 /// The default maximum handshake length, in bytes
@@ -428,7 +480,7 @@ pub const DEFAULT_MAX_PAYLOAD_LEN: usize = 0x0fffffff;
 /// The default fragmentation size
 ///
 /// Messages longer than this will be split into multiple frames.
-pub const DEFAULT_FRAGMENT_SIZE: usize = DEFAULT_MAX_PAYLOAD_LEN;
+pub const DEFAULT_FRAGMENT_SIZE: usize = DEFAULT_MAX_PAYLOAD_LEN / 10;
 
 /// A websocket
 ///
@@ -580,8 +632,8 @@ where
         match self.stream.read_frame(self.max_payload_len).await? {
             Some(frame) => Ok(frame),
             None => {
-                self.state = State::Closed;
-                Err(Error::unexpected_close())
+                self.state = State::FullyClosed;
+                Err(Error::ClosedWithoutHandshake)
             }
         }
     }
@@ -595,7 +647,8 @@ where
     /// have been read.
     pub async fn read(&mut self) -> Result<Message, Error> {
         // got a close. turn it into Message::Close
-        fn close(frame: Frame) -> Message {
+        fn close(frame: Frame, state: &mut State) -> Message {
+            *state = State::GotClose;
             let payload = frame.payload();
             match payload[..] {
                 [] | [_] => Message::Close(None),
@@ -604,10 +657,10 @@ where
         }
 
         match self.state {
-            State::Closed => Err(Error::WasClosed),
             State::NoHandshake => Err(Error::NoHandshake),
+            State::GotClose | State::FullyClosed => Err(Error::WasClosed),
 
-            State::Open => {
+            State::Open | State::OpenSentClose => {
                 // wait for a frame
                 let frame = self.next_frame().await?;
 
@@ -615,7 +668,7 @@ where
                     Opcode::Text | Opcode::Binary => {}
                     Opcode::Ping => return Ok(Message::Ping(frame.payload())),
                     Opcode::Pong => return Ok(Message::Pong(frame.payload())),
-                    Opcode::Close => return Ok(close(frame)),
+                    Opcode::Close => return Ok(close(frame, &mut self.state)),
                     _ => return Err(Error::Frame(FrameError::UnexpectedOpcodeOpen)),
                 }
 
@@ -631,26 +684,30 @@ where
                     match frame.opcode() {
                         Opcode::Continuation => {
                             // extend the payload while we get continuation frames
-                            read_payload.extend(frame.payload());
+                            let payload = frame.payload();
+                            if read_payload.len() + payload.len() > self.max_payload_len {
+                                return Err(Error::MessageTooLarge);
+                            }
+                            read_payload.extend(payload);
                         }
 
-                        Opcode::Close => return Ok(close(frame)),
+                        Opcode::Close => return Ok(close(frame, &mut self.state)),
 
                         // reading a control frame other than close puts us in
                         // partial read. keep anything we've gotten so far
-                        Opcode::Ping => {
-                            self.state = State::PartialRead {
-                                first_opcode,
-                                read_payload,
+                        opcode @ (Opcode::Ping | Opcode::Pong) => {
+                            self.state = if self.state == State::Open {
+                                State::PartialRead {
+                                    first_opcode,
+                                    read_payload,
+                                }
+                            } else {
+                                State::PartialReadSentClose {
+                                    first_opcode,
+                                    read_payload,
+                                }
                             };
-                            return Ok(Message::Ping(frame.payload()));
-                        }
-                        Opcode::Pong => {
-                            self.state = State::PartialRead {
-                                first_opcode,
-                                read_payload,
-                            };
-                            return Ok(Message::Pong(frame.payload()));
+                            return opcode.ping_pong_message(frame.payload());
                         }
 
                         _ => return Err(Error::Frame(FrameError::UnexpectedOpcodeOpenNonFinal)),
@@ -668,23 +725,33 @@ where
                 }
             }
 
-            State::PartialRead { .. } => {
+            State::PartialRead { .. } | State::PartialReadSentClose { .. } => {
                 // we were interrupted by a control frame
                 let frame = self.next_frame().await?;
                 let mut final_frame = frame.fin();
 
-                fn extend(frame: Frame, state: &mut State) -> Result<Option<Message>, Error> {
+                fn extend(
+                    frame: Frame,
+                    state: &mut State,
+                    max_payload_len: usize,
+                ) -> Result<Option<Message>, Error> {
                     match frame.opcode() {
                         Opcode::Continuation => {
-                            let State::PartialRead { read_payload, .. } = state else {
+                            let (State::PartialRead { read_payload, .. }
+                            | State::PartialReadSentClose { read_payload, .. }) = state
+                            else {
                                 return Err(Error::Bug("not partial read extending"));
                             };
-                            read_payload.extend(frame.payload());
+                            let payload = frame.payload();
+                            if read_payload.len() + payload.len() > max_payload_len {
+                                return Err(Error::MessageTooLarge);
+                            }
+                            read_payload.extend(payload);
                             Ok(None)
                         }
                         Opcode::Ping => Ok(Some(Message::Ping(frame.payload()))),
                         Opcode::Pong => Ok(Some(Message::Pong(frame.payload()))),
-                        Opcode::Close => Ok(Some(close(frame))),
+                        Opcode::Close => Ok(Some(close(frame, state))),
 
                         _ => Err(Error::Frame(FrameError::UnexpectedOpcodePartialRead)),
                     }
@@ -692,26 +759,19 @@ where
 
                 // keep reading only continuation and control frames, extending
                 // the current message's payload
-                if let Some(message) = extend(frame, &mut self.state)? {
+                if let Some(message) = extend(frame, &mut self.state, self.max_payload_len)? {
                     return Ok(message);
                 }
                 while !final_frame {
                     let frame = self.next_frame().await?;
                     final_frame = frame.fin();
-                    if let Some(message) = extend(frame, &mut self.state)? {
+                    if let Some(message) = extend(frame, &mut self.state, self.max_payload_len)? {
                         return Ok(message);
                     }
                 }
 
                 // done!
-                let State::PartialRead {
-                    read_payload,
-                    first_opcode,
-                } = std::mem::replace(&mut self.state, State::Open)
-                else {
-                    return Err(Error::Bug("not partial read in replace"));
-                };
-
+                let (first_opcode, read_payload) = self.state.take_partial()?;
                 match first_opcode {
                     Opcode::Text => Ok(Message::Text(
                         String::from_utf8(read_payload)
@@ -724,6 +784,22 @@ where
         }
     }
 
+    fn check_send(&mut self, message: MessageRef<'_>) -> Result<(), Error> {
+        match &self.state {
+            State::NoHandshake => Err(Error::NoHandshake),
+            State::FullyClosed | State::OpenSentClose | State::PartialReadSentClose { .. } => {
+                Err(Error::WasClosed)
+            }
+            State::GotClose if !message.is_close() => Err(Error::WasClosed),
+            _ => {
+                if message.is_close() {
+                    self.state = State::FullyClosed;
+                }
+                Ok(())
+            }
+        }
+    }
+
     /// Write a message to the other end of the websocket
     ///
     /// # Cancel safety
@@ -732,13 +808,8 @@ where
     /// [`tokio::select!`] and another branch completes first, the `message` may
     /// have not been written completely.
     pub async fn write<'data>(&mut self, message: impl AsMessageRef<'data>) -> Result<(), Error> {
-        match &self.state {
-            State::Closed => return Err(Error::WasClosed),
-            State::NoHandshake => return Err(Error::NoHandshake),
-            _ => {}
-        }
-
         let message = message.as_message_ref();
+        self.check_send(message)?;
         self.stream
             .write_message(message, self.fragment_size)
             .await?;
@@ -749,12 +820,6 @@ where
     ///
     /// Calling this may be necessary after calling [`WebSocket::write`].
     pub async fn flush(&mut self) -> Result<(), Error> {
-        match &self.state {
-            State::Closed => return Err(Error::WasClosed),
-            State::NoHandshake => return Err(Error::NoHandshake),
-            _ => {}
-        }
-
         self.stream.flush().await
     }
 
@@ -769,12 +834,7 @@ where
     /// [`tokio::select!`] and another branch completes first, the close message
     /// may have not been written completely.
     pub async fn close(&mut self) -> Result<(), Error> {
-        match &self.state {
-            State::Closed => return Err(Error::WasClosed),
-            State::NoHandshake => return Err(Error::NoHandshake),
-            _ => {}
-        }
-
+        self.check_send(MessageRef::Close(None))?;
         self.stream.write_close().await?;
         self.flush().await
     }
