@@ -435,6 +435,32 @@ enum State {
 }
 
 impl State {
+    fn send_closed(&mut self) -> Result<(), Error> {
+        match self {
+            State::Open => {
+                *self = State::OpenSentClose;
+                Ok(())
+            }
+            State::PartialRead {
+                first_opcode,
+                read_payload,
+            } => {
+                let first_opcode = std::mem::replace(first_opcode, Opcode::Reserved);
+                let read_payload = std::mem::replace(read_payload, Vec::with_capacity(0));
+                *self = State::PartialReadSentClose {
+                    first_opcode,
+                    read_payload,
+                };
+                Ok(())
+            }
+            State::GotClose => {
+                *self = State::FullyClosed;
+                Ok(())
+            }
+            _ => Err(Error::Bug("send closed on non-open, partial read, got close")),
+        }
+    }
+
     fn take_partial(&mut self) -> Result<(Opcode, Vec<u8>), Error> {
         match self {
             State::PartialRead { .. } => {
@@ -793,7 +819,7 @@ where
             State::GotClose if !message.is_close() => Err(Error::WasClosed),
             _ => {
                 if message.is_close() {
-                    self.state = State::FullyClosed;
+                    self.state.send_closed()?;
                 }
                 Ok(())
             }

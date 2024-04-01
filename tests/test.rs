@@ -230,8 +230,7 @@ fn max_payload_len() {
     let client_send_done = send_done.clone();
     let _client_handle = runtime.spawn(async move {
         let client = TcpStream::connect(addr).await.unwrap();
-        let mut ws =
-            WebSocket::client(ws_url(addr, "single text message then close"), client).unwrap();
+        let mut ws = WebSocket::client(ws_url(addr, "max payload len"), client).unwrap();
 
         ws.set_max_payload_len(5);
 
@@ -284,8 +283,7 @@ fn no_handshake() {
     let client_send_done = send_done.clone();
     let _client_handle = runtime.spawn(async move {
         let client = TcpStream::connect(addr).await.unwrap();
-        let mut ws =
-            WebSocket::client(ws_url(addr, "single text message then close"), client).unwrap();
+        let mut ws = WebSocket::client(ws_url(addr, "no handshake"), client).unwrap();
 
         assert!(matches!(ws.read().await, Err(Error::NoHandshake)));
         assert!(matches!(
@@ -333,8 +331,7 @@ fn read_after_got_close() {
     let client_send_done = send_done.clone();
     let _client_handle = runtime.spawn(async move {
         let client = TcpStream::connect(addr).await.unwrap();
-        let mut ws =
-            WebSocket::client(ws_url(addr, "single text message then close"), client).unwrap();
+        let mut ws = WebSocket::client(ws_url(addr, "read after got close"), client).unwrap();
 
         ws.client_handshake().await.unwrap();
 
@@ -378,8 +375,7 @@ fn write_after_got_close() {
     let client_send_done = send_done.clone();
     let _client_handle = runtime.spawn(async move {
         let client = TcpStream::connect(addr).await.unwrap();
-        let mut ws =
-            WebSocket::client(ws_url(addr, "single text message then close"), client).unwrap();
+        let mut ws = WebSocket::client(ws_url(addr, "write after got close"), client).unwrap();
 
         ws.client_handshake().await.unwrap();
 
@@ -419,7 +415,7 @@ fn read_after_sent_close() {
         ws.server_handshake().await.unwrap();
         ws.close().await.unwrap();
         assert!(matches!(ws.read().await.unwrap(), Message::Text(text) if text == TEXT));
-        while !matches!(ws.read().await.unwrap(), Message::Close(_)) {}
+        assert!(matches!(ws.read().await.unwrap(), Message::Close(None)));
 
         server_send_done.send(()).unwrap();
     });
@@ -427,8 +423,7 @@ fn read_after_sent_close() {
     let client_send_done = send_done.clone();
     let _client_handle = runtime.spawn(async move {
         let client = TcpStream::connect(addr).await.unwrap();
-        let mut ws =
-            WebSocket::client(ws_url(addr, "single text message then close"), client).unwrap();
+        let mut ws = WebSocket::client(ws_url(addr, "read after sent close"), client).unwrap();
 
         ws.client_handshake().await.unwrap();
         ws.write(MessageRef::Text(TEXT)).await.unwrap();
@@ -474,8 +469,7 @@ fn write_after_sent_close() {
     let client_send_done = send_done.clone();
     let _client_handle = runtime.spawn(async move {
         let client = TcpStream::connect(addr).await.unwrap();
-        let mut ws =
-            WebSocket::client(ws_url(addr, "single text message then close"), client).unwrap();
+        let mut ws = WebSocket::client(ws_url(addr, "write after sent close"), client).unwrap();
 
         ws.client_handshake().await.unwrap();
         assert!(matches!(ws.read().await.unwrap(), Message::Text(text) if text == TEXT));
